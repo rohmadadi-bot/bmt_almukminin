@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 // Import Keanggotaan
-import 'keanggotaan/registrasi_page.dart';
 import 'keanggotaan/daftar_anggota_page.dart';
 
 // Import Fasilitas
@@ -49,8 +48,6 @@ class HomePage extends StatelessWidget {
             // 1. KEANGGOTAAN
             _buildSectionTitle('Manajemen Keanggotaan'),
             _buildMenuGrid(context, [
-              _MenuData(
-                  Icons.person_add_alt_1, 'Registrasi Anggota', Colors.blue),
               _MenuData(Icons.groups_rounded, 'Daftar Anggota', Colors.blue),
             ]),
 
@@ -161,9 +158,6 @@ class HomePage extends StatelessWidget {
 
     switch (menuTitle) {
       // Keanggotaan
-      case 'Registrasi Anggota':
-        targetPage = const RegistrasiPage();
-        break;
       case 'Daftar Anggota':
         targetPage = const DaftarAnggotaPage();
         break;

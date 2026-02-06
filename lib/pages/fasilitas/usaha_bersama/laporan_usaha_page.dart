@@ -52,7 +52,7 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
       return;
     }
 
-    // --- RUMUS PERHITUNGAN ---
+    // --- RUMUS PERHITUNGAN (Hanya untuk Tampilan Preview) ---
     double totalMasuk = _totalPemasukan;
     double kontribusiBmt = totalMasuk * 0.05; // 5%
     double danaSiapDibagi = totalMasuk - kontribusiBmt; // 95%
@@ -72,8 +72,7 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
             padding: EdgeInsets.only(
                 bottom: MediaQuery.of(context).viewInsets.bottom),
             child: DraggableScrollableSheet(
-              initialChildSize:
-                  0.75, // Sedikit lebih tinggi untuk info tambahan
+              initialChildSize: 0.75,
               minChildSize: 0.5,
               maxChildSize: 0.9,
               expand: false,
@@ -259,13 +258,14 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
                                     borderRadius: BorderRadius.circular(10))),
                             onPressed: () async {
                               if (formKey.currentState!.validate()) {
-                                // PENTING: Kita kirim 'danaSiapDibagi' sebagai totalLapor
-                                // agar DbHelper membagikan nominal bersih ke nasabah.
+                                // PERBAIKAN PENTING DI SINI:
+                                // Kita kirim 'totalMasuk' (Nilai KOTOR 100%) ke database.
+                                // DbHelper yang akan memotong 5% dan menyimpan sisanya.
                                 await _dbHelper.buatLaporanUsaha(
                                     usahaId: widget.usaha['id'],
                                     namaUsaha: widget.usaha['nama_usaha'],
                                     totalLapor:
-                                        danaSiapDibagi, // Kirim Nominal Bersih
+                                        totalMasuk, // <--- GUNAKAN TOTAL MASUK (100%)
                                     tgl: tglController.text,
                                     ket: ketController.text.isEmpty
                                         ? "Laporan Berkala"
@@ -395,7 +395,7 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
                             const SizedBox(height: 10),
                         itemBuilder: (context, index) {
                           final item = _listLaporan[index];
-                          // Item di database menyimpan 'Dana Siap Dibagi'
+                          // Item di database menyimpan 'Dana Siap Dibagi' (Bersih)
                           // Kita tampilkan itu saja di list
                           return Card(
                             elevation: 2,

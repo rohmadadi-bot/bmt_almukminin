@@ -23,6 +23,27 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
   late Map<String, dynamic> _currentNasabah;
   double _saldoWadiah = 0;
 
+  // VARIABEL SUMMARY MURABAHAH (JUAL BELI)
+  double _murabahahSisaKewajiban = 0;
+  double _murabahahBebanBulanan = 0;
+  int _murabahahBelumLunas = 0;
+  int _murabahahSudahLunas = 0;
+
+  // VARIABEL SUMMARY MUDHARABAH (BAGI HASIL)
+  double _mudharabahTotalModal = 0;
+  double _mudharabahTotalKeuntungan = 0;
+  double _mudharabahKeuntunganBMT = 0;
+  double _mudharabahKeuntunganNasabah = 0;
+
+  // VARIABEL SUMMARY PINJAMAN LUNAK
+  double _pinjamanTotalPlafond = 0;
+  double _pinjamanSudahBayar = 0;
+  double _pinjamanSisaTagihan = 0;
+
+  // VARIABEL SUMMARY USAHA BERSAMA (INVESTASI)
+  double _usahaTotalInvestasi = 0;
+  double _usahaTotalKeuntungan = 0;
+
   final NumberFormat _formatter = NumberFormat.currency(
     locale: 'id',
     symbol: 'Rp ',
@@ -33,7 +54,15 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
   void initState() {
     super.initState();
     _currentNasabah = widget.nasabah;
-    _loadSaldoWadiah();
+    _refreshAllData();
+  }
+
+  Future<void> _refreshAllData() async {
+    await _loadSaldoWadiah();
+    await _loadMurabahahSummary();
+    await _loadMudharabahSummary();
+    await _loadPinjamanSummary();
+    await _loadUsahaSummary();
   }
 
   Future<void> _loadSaldoWadiah() async {
@@ -45,6 +74,178 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
     }
   }
 
+  // --- LOGIKA HITUNG SUMMARY MURABAHAH ---
+  Future<void> _loadMurabahahSummary() async {
+    try {
+      final db = await _dbHelper.database;
+      final List<Map<String, dynamic>> akadList = await db.query(
+        'murabahah_akad',
+        where: 'nasabah_id = ?',
+        whereArgs: [_currentNasabah['id']],
+      );
+
+      double tempSisa = 0;
+      double tempBeban = 0;
+      int tempBelum = 0;
+      int tempLunas = 0;
+
+      for (var akad in akadList) {
+        var resBayar = await db.rawQuery(
+            "SELECT SUM(jumlah_bayar) as total FROM murabah_angsuran WHERE akad_id = ?",
+            [akad['id']]);
+
+        double totalPiutang =
+            (akad['total_piutang'] as num?)?.toDouble() ?? 0.0;
+        double sudahBayar =
+            (resBayar.first['total'] as num?)?.toDouble() ?? 0.0;
+        double angsuranPerBulan =
+            (akad['angsuran_bulanan'] as num?)?.toDouble() ?? 0.0;
+
+        double sisa = totalPiutang - sudahBayar;
+        bool isLunas = sisa <= 100;
+
+        if (isLunas) {
+          tempLunas++;
+        } else {
+          tempBelum++;
+          tempSisa += sisa;
+          tempBeban += angsuranPerBulan;
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _murabahahSisaKewajiban = tempSisa;
+          _murabahahBebanBulanan = tempBeban;
+          _murabahahBelumLunas = tempBelum;
+          _murabahahSudahLunas = tempLunas;
+        });
+      }
+    } catch (e) {
+      debugPrint("Error load murabahah summary: $e");
+    }
+  }
+
+  // --- LOGIKA HITUNG SUMMARY MUDHARABAH ---
+  Future<void> _loadMudharabahSummary() async {
+    try {
+      final db = await _dbHelper.database;
+      final akadList = await db.query(
+        'mudharabah_akad',
+        where: 'nasabah_id = ?',
+        whereArgs: [_currentNasabah['id']],
+      );
+
+      double tempModal = 0;
+      double tempKeuntungan = 0;
+      double tempBagiHasilBMT = 0;
+
+      for (var akad in akadList) {
+        if (akad['status'] == 'Disetujui' || akad['status'] == 'Aktif') {
+          tempModal += (akad['nominal_modal'] as num?)?.toDouble() ?? 0;
+        }
+
+        final transaksiList = await db.query(
+          'mudharabah_transaksi',
+          where: 'akad_id = ?',
+          whereArgs: [akad['id']],
+        );
+
+        for (var tr in transaksiList) {
+          tempKeuntungan += (tr['total_keuntungan'] as num?)?.toDouble() ?? 0;
+          tempBagiHasilBMT += (tr['bagian_bmt'] as num?)?.toDouble() ?? 0;
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _mudharabahTotalModal = tempModal;
+          _mudharabahTotalKeuntungan = tempKeuntungan;
+          _mudharabahKeuntunganBMT = tempBagiHasilBMT;
+          _mudharabahKeuntunganNasabah = tempKeuntungan - tempBagiHasilBMT;
+        });
+      }
+    } catch (e) {
+      debugPrint("Error load mudharabah summary: $e");
+    }
+  }
+
+  // --- LOGIKA HITUNG SUMMARY PINJAMAN LUNAK ---
+  Future<void> _loadPinjamanSummary() async {
+    try {
+      final db = await _dbHelper.database;
+      final pinjamanList = await db.query(
+        'pinjaman_lunak',
+        where: 'nasabah_id = ?',
+        whereArgs: [_currentNasabah['id']],
+      );
+
+      double tempPlafond = 0;
+      double tempBayar = 0;
+
+      for (var p in pinjamanList) {
+        var resBayar = await db.rawQuery(
+            "SELECT SUM(jumlah_bayar) as total FROM pinjaman_lunak_cicilan WHERE pinjaman_id = ?",
+            [p['id']]);
+
+        double nominal = (p['nominal'] as num?)?.toDouble() ?? 0.0;
+        double sudahBayar =
+            (resBayar.first['total'] as num?)?.toDouble() ?? 0.0;
+
+        if (p['status'] == 'Disetujui' || p['status'] == 'Lunas') {
+          tempPlafond += nominal;
+          tempBayar += sudahBayar;
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _pinjamanTotalPlafond = tempPlafond;
+          _pinjamanSudahBayar = tempBayar;
+          _pinjamanSisaTagihan = tempPlafond - tempBayar;
+        });
+      }
+    } catch (e) {
+      debugPrint("Error load pinjaman summary: $e");
+    }
+  }
+
+  // --- LOGIKA HITUNG SUMMARY USAHA BERSAMA ---
+  Future<void> _loadUsahaSummary() async {
+    try {
+      final db = await _dbHelper.database;
+
+      final List<Map<String, dynamic>> portofolio = await db.rawQuery('''
+        SELECT m.jumlah_modal
+        FROM usaha_modal m
+        WHERE LOWER(m.nama_pemodal) LIKE LOWER(?)
+      ''', ['%${_currentNasabah['nama']}%']);
+
+      double tempInvestasi = 0;
+      for (var p in portofolio) {
+        tempInvestasi += (p['jumlah_modal'] as num?)?.toDouble() ?? 0.0;
+      }
+
+      final resKeuntungan = await db.rawQuery('''
+        SELECT SUM(jumlah) as total 
+        FROM transaksi_wadiah 
+        WHERE nasabah_id = ? AND keterangan LIKE 'Bagi Hasil Otomatis:%'
+      ''', [_currentNasabah['id']]);
+
+      double tempKeuntungan =
+          (resKeuntungan.first['total'] as num?)?.toDouble() ?? 0.0;
+
+      if (mounted) {
+        setState(() {
+          _usahaTotalInvestasi = tempInvestasi;
+          _usahaTotalKeuntungan = tempKeuntungan;
+        });
+      }
+    } catch (e) {
+      debugPrint("Error load usaha summary: $e");
+    }
+  }
+
   Future<void> _refreshData() async {
     final allNasabah = await _dbHelper.getAllAnggota();
     try {
@@ -52,18 +253,16 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
         (element) => element['id'] == _currentNasabah['id'],
       );
       setState(() => _currentNasabah = updatedData);
-      await _loadSaldoWadiah();
+      await _refreshAllData();
     } catch (e) {
       if (mounted) Navigator.pop(context);
     }
   }
 
-  // --- FUNGSI RIWAYAT MUTASI (SUDAH DIPERBAIKI SESUAI DB HELPER) ---
+  // --- FUNGSI RIWAYAT MUTASI ---
   void _showRiwayatMutasi() async {
     try {
       final db = await _dbHelper.database;
-
-      // PERBAIKAN: Menggunakan nama tabel 'transaksi_wadiah' sesuai DbHelper Anda
       final List<Map<String, dynamic>> riwayat = await db.query(
         'transaksi_wadiah',
         where: 'nasabah_id = ?',
@@ -90,7 +289,6 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
                 ),
                 child: Column(
                   children: [
-                    // Handle Bar
                     Center(
                       child: Container(
                         margin: const EdgeInsets.only(top: 10, bottom: 5),
@@ -101,8 +299,6 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
                             borderRadius: BorderRadius.circular(10)),
                       ),
                     ),
-
-                    // Header Title
                     Padding(
                       padding: const EdgeInsets.all(16.0),
                       child: Row(
@@ -118,8 +314,6 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
                       ),
                     ),
                     const Divider(height: 1),
-
-                    // List Data Transaksi
                     Expanded(
                       child: riwayat.isEmpty
                           ? Center(
@@ -141,15 +335,10 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
                                   const Divider(height: 1),
                               itemBuilder: (context, index) {
                                 final item = riwayat[index];
-
-                                // PERBAIKAN: Menggunakan nama kolom sesuai DbHelper ('jenis', 'jumlah', 'tgl_transaksi')
                                 String jenis = item['jenis'] ?? 'Transaksi';
                                 double nominal =
                                     (item['jumlah'] as num?)?.toDouble() ?? 0;
                                 String tanggal = item['tgl_transaksi'] ?? '-';
-                                String ket = item['keterangan'] ?? '-';
-
-                                // Logika Warna: Setoran/Bagi Hasil = Hijau (Masuk)
                                 bool isMasuk = [
                                   'Setoran',
                                   'Setor Tunai',
@@ -176,20 +365,8 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
                                   title: Text(jenis,
                                       style: const TextStyle(
                                           fontWeight: FontWeight.bold)),
-                                  subtitle: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(tanggal,
-                                          style: const TextStyle(fontSize: 12)),
-                                      if (ket != '-' && ket.isNotEmpty)
-                                        Text(ket,
-                                            style: const TextStyle(
-                                                fontSize: 11,
-                                                fontStyle: FontStyle.italic,
-                                                color: Colors.grey)),
-                                    ],
-                                  ),
+                                  subtitle: Text(tanggal,
+                                      style: const TextStyle(fontSize: 12)),
                                   trailing: Text(
                                     "${isMasuk ? '+' : '-'} ${_formatter.format(nominal)}",
                                     style: TextStyle(
@@ -204,8 +381,6 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
                               },
                             ),
                     ),
-
-                    // Tombol Tutup
                     Padding(
                       padding: const EdgeInsets.all(16.0),
                       child: SizedBox(
@@ -230,14 +405,6 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
       );
     } catch (e) {
       debugPrint("Gagal membuka riwayat: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Gagal memuat riwayat: $e"),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
     }
   }
 
@@ -271,80 +438,36 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 1. PROFIL HEADER
               _buildProfileHeader(),
               const SizedBox(height: 20),
 
-              // 2. KARTU SALDO WADIAH
               const Text("KEUANGAN UTAMA",
                   style: TextStyle(
                       fontWeight: FontWeight.bold, color: Colors.grey)),
               const SizedBox(height: 10),
+
+              // 1. KARTU SALDO WADIAH
               _buildWadiahCard(),
-              const SizedBox(height: 25),
+              const SizedBox(height: 15),
 
-              // 3. MENU FASILITAS
-              const Text("FASILITAS & PEMBIAYAAN",
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold, color: Colors.grey)),
-              const SizedBox(height: 10),
+              // 2. KARTU JUAL BELI MURABAHAH
+              _buildMurabahahCard(),
+              const SizedBox(height: 15),
 
-              GridView.count(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                crossAxisCount: 2,
-                crossAxisSpacing: 15,
-                mainAxisSpacing: 15,
-                childAspectRatio: 1.3,
-                children: [
-                  _buildMenuButton(
-                    title: "Jual Beli\n(Murabahah)",
-                    icon: Icons.shopping_cart,
-                    color: Colors.blue,
-                    onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (context) => DetailJualBeliAnggotaPage(
-                                nasabahId: _currentNasabah['id']))),
-                  ),
-                  _buildMenuButton(
-                    title: "Bagi Hasil\n(Mudharabah)",
-                    icon: Icons.handshake,
-                    color: Colors.purple,
-                    onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (context) => DetailBagiHasilAnggotaPage(
-                                nasabahId: _currentNasabah['id']))),
-                  ),
-                  _buildMenuButton(
-                    title: "Pinjaman Lunak\n(Qardhul Hasan)",
-                    icon: Icons.volunteer_activism,
-                    color: Colors.orange,
-                    onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (context) =>
-                                DetailPinjamanLunakAnggotaPage(
-                                    nasabahId: _currentNasabah['id']))),
-                  ),
-                  _buildMenuButton(
-                    title: "Usaha Bersama\n(Investasi)",
-                    icon: Icons.storefront,
-                    color: Colors.teal,
-                    onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (context) => DetailUsahaBersamaAnggotaPage(
-                                nasabahId: _currentNasabah['id'],
-                                namaNasabah: _currentNasabah['nama']))),
-                  ),
-                ],
-              ),
+              // 3. KARTU BAGI HASIL MUDHARABAH
+              _buildMudharabahCard(),
+              const SizedBox(height: 15),
+
+              // 4. KARTU PINJAMAN LUNAK
+              _buildPinjamanCard(),
+              const SizedBox(height: 15),
+
+              // 5. KARTU USAHA BERSAMA
+              _buildUsahaCard(),
 
               const SizedBox(height: 30),
 
-              // 4. TOMBOL HAPUS
+              // TOMBOL HAPUS
               SizedBox(
                 width: double.infinity,
                 child: TextButton.icon(
@@ -362,35 +485,6 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
   }
 
   // --- WIDGETS ---
-
-  Widget _buildMenuButton(
-      {required String title,
-      required IconData icon,
-      required Color color,
-      required VoidCallback onTap}) {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(15),
-        onTap: onTap,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircleAvatar(
-              backgroundColor: color.withOpacity(0.1),
-              child: Icon(icon, color: color),
-            ),
-            const SizedBox(height: 10),
-            Text(title,
-                textAlign: TextAlign.center,
-                style:
-                    const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-          ],
-        ),
-      ),
-    );
-  }
 
   Widget _buildProfileHeader() {
     return Container(
@@ -446,8 +540,6 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
                   fontSize: 24,
                   fontWeight: FontWeight.bold)),
           const SizedBox(height: 15),
-
-          // TOMBOL BARU: RIWAYAT MUTASI
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
@@ -464,6 +556,385 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
             ),
           )
         ],
+      ),
+    );
+  }
+
+  Widget _buildMurabahahCard() {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(15),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 5,
+              offset: const Offset(0, 3))
+        ],
+      ),
+      child: Material(
+        borderRadius: BorderRadius.circular(15),
+        clipBehavior: Clip.antiAlias,
+        color: Colors.transparent,
+        child: Ink(
+          decoration: const BoxDecoration(
+            gradient:
+                LinearGradient(colors: [Color(0xFF29B6F6), Color(0xFF039BE5)]),
+          ),
+          child: InkWell(
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => DetailJualBeliAnggotaPage(
+                    nasabahId: _currentNasabah['id'],
+                  ),
+                ),
+              ).then((_) => _refreshAllData());
+            },
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("Sisa Kewajiban Murabahah",
+                      style: TextStyle(color: Colors.white70)),
+                  const SizedBox(height: 5),
+                  Text(_formatter.format(_murabahahSisaKewajiban),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 15),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text("Beban Bulanan",
+                              style: TextStyle(
+                                  color: Colors.white70, fontSize: 12)),
+                          Text(_formatter.format(_murabahahBebanBulanan),
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(8)),
+                            child: Column(
+                              children: [
+                                const Text("Belum",
+                                    style: TextStyle(
+                                        color: Colors.white70, fontSize: 10)),
+                                Text("$_murabahahBelumLunas",
+                                    style: const TextStyle(
+                                        color: Colors.orangeAccent,
+                                        fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(8)),
+                            child: Column(
+                              children: [
+                                const Text("Lunas",
+                                    style: TextStyle(
+                                        color: Colors.white70, fontSize: 10)),
+                                Text("$_murabahahSudahLunas",
+                                    style: const TextStyle(
+                                        color: Colors.greenAccent,
+                                        fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      )
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMudharabahCard() {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(15),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 5,
+              offset: const Offset(0, 3))
+        ],
+      ),
+      child: Material(
+        borderRadius: BorderRadius.circular(15),
+        clipBehavior: Clip.antiAlias,
+        color: Colors.transparent,
+        child: Ink(
+          decoration: const BoxDecoration(
+            gradient:
+                LinearGradient(colors: [Color(0xFFAB47BC), Color(0xFF7B1FA2)]),
+          ),
+          child: InkWell(
+            onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => DetailBagiHasilAnggotaPage(
+                            nasabahId: _currentNasabah['id'])))
+                .then((_) => _refreshAllData()),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("Total Modal Disalurkan",
+                      style: TextStyle(color: Colors.white70)),
+                  const SizedBox(height: 5),
+                  Text(_formatter.format(_mudharabahTotalModal),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 15),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8)),
+                    child: Column(
+                      children: [
+                        const Text("Total Keuntungan (Omzet)",
+                            style:
+                                TextStyle(color: Colors.white70, fontSize: 11)),
+                        const SizedBox(height: 2),
+                        Text(_formatter.format(_mudharabahTotalKeuntungan),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("Keuntungan Nasabah",
+                                style: TextStyle(
+                                    color: Colors.white70, fontSize: 11)),
+                            Text(
+                                _formatter.format(_mudharabahKeuntunganNasabah),
+                                style: const TextStyle(
+                                    color: Colors.orangeAccent,
+                                    fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            const Text("Masuk BMT",
+                                style: TextStyle(
+                                    color: Colors.white70, fontSize: 11)),
+                            Text(_formatter.format(_mudharabahKeuntunganBMT),
+                                style: const TextStyle(
+                                    color: Colors.greenAccent,
+                                    fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPinjamanCard() {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(15),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 5,
+              offset: const Offset(0, 3))
+        ],
+      ),
+      child: Material(
+        borderRadius: BorderRadius.circular(15),
+        clipBehavior: Clip.antiAlias,
+        color: Colors.transparent,
+        child: Ink(
+          decoration: const BoxDecoration(
+            gradient:
+                LinearGradient(colors: [Color(0xFFFFA726), Color(0xFFF57C00)]),
+          ),
+          child: InkWell(
+            onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => DetailPinjamanLunakAnggotaPage(
+                            nasabahId: _currentNasabah['id'])))
+                .then((_) => _refreshAllData()),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("Total Pinjaman (Plafond)",
+                      style: TextStyle(color: Colors.white70)),
+                  const SizedBox(height: 5),
+                  Text(_formatter.format(_pinjamanTotalPlafond),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 15),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("Sudah Dibayar",
+                                style: TextStyle(
+                                    color: Colors.white70, fontSize: 12)),
+                            Text(_formatter.format(_pinjamanSudahBayar),
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            const Text("Sisa Tagihan",
+                                style: TextStyle(
+                                    color: Colors.white70, fontSize: 12)),
+                            Text(_formatter.format(_pinjamanSisaTagihan),
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUsahaCard() {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(15),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 5,
+              offset: const Offset(0, 3))
+        ],
+      ),
+      child: Material(
+        borderRadius: BorderRadius.circular(15),
+        clipBehavior: Clip.antiAlias,
+        color: Colors.transparent,
+        child: Ink(
+          decoration: const BoxDecoration(
+            color: Colors.teal,
+          ),
+          child: InkWell(
+            onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => DetailUsahaBersamaAnggotaPage(
+                            nasabahId: _currentNasabah['id'],
+                            namaNasabah: _currentNasabah['nama'])))
+                .then((_) => _refreshAllData()),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text("Total Nilai Investasi",
+                      style: TextStyle(color: Colors.white70)),
+                  const SizedBox(height: 5),
+                  Text(_formatter.format(_usahaTotalInvestasi),
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 15),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12)),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.trending_up,
+                            color: Colors.white, size: 20),
+                        const SizedBox(width: 10),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("Total Bagi Hasil Diterima",
+                                style: TextStyle(
+                                    color: Colors.white70, fontSize: 11)),
+                            Text(_formatter.format(_usahaTotalKeuntungan),
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14)),
+                          ],
+                        )
+                      ],
+                    ),
+                  )
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -492,7 +963,7 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
     if (confirm) {
       await _dbHelper.deleteAnggota(_currentNasabah['id']);
       if (mounted) {
-        Navigator.pop(context, true); // Kembali ke list & refresh
+        Navigator.pop(context, true);
         ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text("Anggota berhasil dihapus")));
       }

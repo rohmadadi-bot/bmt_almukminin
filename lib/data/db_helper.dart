@@ -19,7 +19,7 @@ class DbHelper {
     String path = join(await getDatabasesPath(), 'bmt_almukminin.db');
     return await openDatabase(
       path,
-      // UPDATE: Upgraded to Version 17 (Added Cash Flow Report Logic)
+      // UPDATE: Upgraded to Version 17
       version: 17,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
@@ -164,11 +164,9 @@ class DbHelper {
     if (oldVersion < 15) {
       await _createTableDanaBMT(db);
     }
-    // UPDATE: Migration to version 16 (Expenditure Table)
     if (oldVersion < 16) {
       await _createTablePengeluaranBMT(db);
     }
-    // Version 17 uses existing tables, just logic updates
   }
 
   // --- TABLE DEFINITIONS ---
@@ -365,12 +363,11 @@ class DbHelper {
     ''');
   }
 
-  // EXPENDITURE TABLE (NEW)
   Future _createTablePengeluaranBMT(Database db) async {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS pengeluaran_bmt (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        kategori TEXT, -- 'Rutin' or 'Tidak Rutin'
+        kategori TEXT,
         nama_pengeluaran TEXT,
         nominal INTEGER,
         tanggal TEXT,
@@ -532,7 +529,7 @@ class DbHelper {
   // 7. [MODIFIED] VENTURE REPORT & DISTRIBUTION (SPLIT 5% and 95%)
   Future<void> buatLaporanUsaha({
     required int usahaId,
-    required double totalLapor, // THIS IS GROSS INCOME (100%)
+    required double totalLapor, // INI NOMINAL KOTOR (100%)
     required String tgl,
     required String ket,
     required String namaUsaha,
@@ -541,10 +538,10 @@ class DbHelper {
 
     await db.transaction((txn) async {
       // 1. Calculate Distribution
-      double danaBmt = totalLapor * 0.05; // 5% Goes to BMT
-      double danaSiapDibagi = totalLapor - danaBmt; // 95% Goes to Members
+      double danaBmt = totalLapor * 0.05; // 5% Masuk BMT
+      double danaSiapDibagi = totalLapor - danaBmt; // 95% Masuk Anggota
 
-      // 2. Save BMT Fund to Separate Table
+      // 2. Simpan Dana BMT ke Tabel Terpisah
       await txn.insert('dana_bmt', {
         'sumber': 'Bagi Hasil: $namaUsaha',
         'jumlah': danaBmt,
@@ -552,10 +549,10 @@ class DbHelper {
         'keterangan': '5% dari Total: $totalLapor. $ket'
       });
 
-      // 3. Save Main Report (Store Net Amount for History)
+      // 3. Simpan Laporan Utama (Simpan NETTO untuk History)
       await txn.insert('usaha_laporan', {
         'usaha_id': usahaId,
-        'total_lapor': danaSiapDibagi, // Store Net
+        'total_lapor': danaSiapDibagi, // Simpan Netto
         'tgl_lapor': tgl,
         'keterangan': ket
       });
@@ -567,7 +564,7 @@ class DbHelper {
         WHERE usaha_id = ? AND status = 'Belum Dibagi'
       ''', [usahaId]);
 
-      // 5. Distribute to Members (ONLY FROM NET AMOUNT)
+      // 5. Distribusi ke Anggota (DARI DANA BERSIH)
       List<Map<String, dynamic>> listModal = await txn
           .query('usaha_modal', where: 'usaha_id = ?', whereArgs: [usahaId]);
 
@@ -583,7 +580,7 @@ class DbHelper {
           String namaPemodal = pemodal['nama_pemodal'].toString().toLowerCase();
           double modalDia = (pemodal['jumlah_modal'] as num).toDouble();
 
-          // PROFIT SHARING USING (danaSiapDibagi) NOT (totalLapor)
+          // BAGI HASIL MENGGUNAKAN (danaSiapDibagi) BUKAN (totalLapor)
           double jatahBagiHasil = (modalDia / totalModal) * danaSiapDibagi;
 
           if (jatahBagiHasil > 0) {
@@ -615,6 +612,13 @@ class DbHelper {
         whereArgs: [usahaId],
         orderBy: 'tgl_lapor DESC, id DESC');
   }
+
+  // --- FUNGSI BARU YANG DITAMBAHKAN ---
+  Future<int> deleteLaporanUsaha(int id) async {
+    Database db = await database;
+    return await db.delete('usaha_laporan', where: 'id = ?', whereArgs: [id]);
+  }
+  // ------------------------------------
 
   Future<double> getPemasukanBelumDibagi(int usahaId) async {
     Database db = await database;

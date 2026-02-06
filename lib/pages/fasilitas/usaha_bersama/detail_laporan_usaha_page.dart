@@ -4,8 +4,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../data/db_helper.dart';
 
 class DetailLaporanUsahaPage extends StatefulWidget {
-  final Map<String, dynamic> usaha; // Data Usaha
-  final Map<String, dynamic> laporan; // Data Laporan (Total uang yg dibagi)
+  final Map<String, dynamic> usaha;
+  final Map<String, dynamic> laporan;
 
   const DetailLaporanUsahaPage(
       {super.key, required this.usaha, required this.laporan});
@@ -30,20 +30,14 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
   }
 
   Future<void> _hitungDistribusi() async {
-    // 1. Ambil data modal
     final dataModal = await _dbHelper.getModalByUsahaId(widget.usaha['id']);
-
-    // 2. Ambil data anggota (untuk cari nomor telepon)
     final dataAnggota = await _dbHelper.getAllAnggota();
 
-    // 3. Gabungkan Data (Cari Telepon berdasarkan Nama)
     List<Map<String, dynamic>> tempList = [];
     double total = 0;
 
     for (var modal in dataModal) {
       total += (modal['jumlah_modal'] as num).toDouble();
-
-      // Cari data anggota yg namanya sama
       String? noTelp;
       try {
         final anggotaFound = dataAnggota.firstWhere(
@@ -52,14 +46,9 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
               modal['nama_pemodal'].toString().toLowerCase(),
           orElse: () => {},
         );
-        if (anggotaFound.isNotEmpty) {
-          noTelp = anggotaFound['telepon'];
-        }
-      } catch (e) {
-        // Abaikan jika tidak ketemu
-      }
+        if (anggotaFound.isNotEmpty) noTelp = anggotaFound['telepon'];
+      } catch (e) {}
 
-      // Buat map baru yg bisa diedit (tambah no telp)
       Map<String, dynamic> newItem = Map.from(modal);
       newItem['telepon'] = noTelp;
       tempList.add(newItem);
@@ -74,81 +63,94 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
     }
   }
 
-  // --- FUNGSI KIRIM WA ---
-  void _kirimWA(String nama, String? telepon, double persentase,
-      double nominalDiterima) async {
-    if (telepon == null || telepon.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text("Nomor telepon nasabah tidak ditemukan"),
-            backgroundColor: Colors.red),
-      );
-      return;
-    }
+  // --- FUNGSI HAPUS LAPORAN ---
+  Future<void> _hapusLaporan() async {
+    bool? confirm = await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Hapus Laporan?"),
+        content: const Text(
+            "Data laporan ini akan dihapus permanen. Saldo yang sudah masuk ke wadiah tidak otomatis ditarik kembali."),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text("Batal")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text("Hapus", style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
 
-    // Format Nomor HP (08 -> 628)
-    String cleanPhone = telepon.replaceAll(RegExp(r'[^0-9]'), '');
-    if (cleanPhone.startsWith('0')) {
-      cleanPhone = '62${cleanPhone.substring(1)}';
-    }
-
-    // Format Pesan
-    String namaUsaha = widget.usaha['nama_usaha'];
-    String tglLaporan = widget.laporan['tgl_lapor'];
-    String nominalHasil = _formatter.format(nominalDiterima);
-    String persenStr = "${(persentase * 100).toStringAsFixed(2)}%";
-
-    String pesan = "🏛 *BMT AL MUKMININ - BAGI HASIL*\n"
-        "----------------------------------------\n"
-        "Kepada Yth. *$nama*,\n\n"
-        "Berikut adalah laporan bagi hasil usaha *$namaUsaha* pada tanggal $tglLaporan:\n\n"
-        "📊 Saham Anda: $persenStr\n"
-        "💵 *Bagi Hasil: $nominalHasil*\n"
-        "----------------------------------------\n"
-        "✅ _Nominal tersebut telah masuk ke Tabungan Wadiah Anda._\n\n"
-        "Terima kasih atas kepercayaannya.";
-
-    final Uri url = Uri.parse(
-        "https://wa.me/$cleanPhone?text=${Uri.encodeComponent(pesan)}");
-
-    try {
-      await launchUrl(url, mode: LaunchMode.externalApplication);
-    } catch (e) {
-      debugPrint("Gagal kirim WA: $e");
+    if (confirm == true) {
+      await _dbHelper.deleteLaporanUsaha(widget.laporan['id']);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text("Laporan berhasil dihapus"),
+              backgroundColor: Colors.red),
+        );
+        Navigator.pop(context);
+      }
     }
   }
 
-  // Helper Row
-  Widget _buildRow(String label, double nominal,
-      {bool isBold = false, double fontSize = 14, Color? color}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label, style: TextStyle(fontSize: fontSize)),
-          Text(
-            _formatter.format(nominal),
-            style: TextStyle(
-                fontSize: fontSize,
-                fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-                color: color ?? Colors.black),
+  void _kirimWA(String nama, String? telepon, double persentase,
+      double nominalDiterima) async {
+    if (telepon == null || telepon.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text("No HP tidak ditemukan")));
+      return;
+    }
+    String cleanPhone = telepon.replaceAll(RegExp(r'[^0-9]'), '');
+    if (cleanPhone.startsWith('0')) cleanPhone = '62${cleanPhone.substring(1)}';
+
+    String pesan = "🏛 *BMT AL MUKMININ - BAGI HASIL*\n"
+        "Kepada Yth. *$nama*,\n"
+        "Laporan bagi hasil usaha *${widget.usaha['nama_usaha']}* pada ${widget.laporan['tgl_lapor']}:\n"
+        "💰 Total Dibagikan: ${_formatter.format(widget.laporan['total_lapor'])}\n"
+        "📊 Saham Anda: ${(persentase * 100).toStringAsFixed(2)}%\n"
+        "💵 *Diterima: ${_formatter.format(nominalDiterima)}*\n"
+        "✅ _Masuk ke Tabungan Wadiah._";
+
+    final Uri url = Uri.parse(
+        "https://wa.me/$cleanPhone?text=${Uri.encodeComponent(pesan)}");
+    try {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      debugPrint("Gagal WA: $e");
+    }
+  }
+
+  // Widget Helper Baru (Konsisten dengan LaporanUsahaPage)
+  Widget _buildHeaderRow(String label, double nominal,
+      {bool isMinus = false, bool isBig = false}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+              color: Colors.white.withOpacity(isBig ? 1.0 : 0.8),
+              fontSize: isBig ? 16 : 14,
+              fontWeight: isBig ? FontWeight.bold : FontWeight.normal),
+        ),
+        Text(
+          "${isMinus ? '- ' : ''}${_formatter.format(nominal)}",
+          style: TextStyle(
+            color: isMinus ? Colors.red[100] : Colors.white,
+            fontSize: isBig ? 20 : 14,
+            fontWeight: FontWeight.bold,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    // --- PERHITUNGAN BALIK (REVERSE CALCULATION) ---
-    // Di database tersimpan Dana Siap Dibagi (95%)
     double danaSiapDibagi = (widget.laporan['total_lapor'] as num).toDouble();
-
-    // Hitung Total Pemasukan (100%) -> Dana Siap Dibagi / 0.95
     double totalPemasukan = danaSiapDibagi / 0.95;
-
-    // Hitung Kontribusi BMT (5%) -> Total Pemasukan * 0.05
     double kontribusiBmt = totalPemasukan * 0.05;
 
     return Scaffold(
@@ -157,86 +159,94 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
         title: const Text("Detail Bagi Hasil"),
         backgroundColor: const Color(0xFF2E7D32),
         foregroundColor: Colors.white,
+        elevation: 0, // Hilangkan shadow agar menyatu dengan header
+        actions: [
+          IconButton(
+            onPressed: _hapusLaporan,
+            icon: const Icon(Icons.delete),
+            tooltip: "Hapus Laporan",
+          ),
+        ],
       ),
       body: Column(
         children: [
-          // --- HEADER INFO LAPORAN ---
+          // --- HEADER KONSISTEN (Hijau Rounded) ---
           Container(
+            width: double.infinity,
             padding: const EdgeInsets.all(20),
-            color: Colors.white,
+            decoration: const BoxDecoration(
+              color: Color(0xFF2E7D32),
+              borderRadius: BorderRadius.only(
+                bottomLeft: Radius.circular(30),
+                bottomRight: Radius.circular(30),
+              ),
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                _buildHeaderRow("Total Pemasukan", totalPemasukan),
+                const SizedBox(height: 8),
+                _buildHeaderRow("Kontribusi BMT 5%", kontribusiBmt,
+                    isMinus: true),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 10),
+                  child: Divider(color: Colors.white30, height: 1),
+                ),
+                _buildHeaderRow("Dana Siap Dibagi", danaSiapDibagi,
+                    isBig: true),
+                const SizedBox(height: 15),
+
+                // Keterangan & Tanggal
                 Row(
                   children: [
                     const Icon(Icons.calendar_today,
-                        size: 16, color: Colors.grey),
-                    const SizedBox(width: 8),
+                        size: 14, color: Colors.white70),
+                    const SizedBox(width: 5),
                     Text(
                       widget.laporan['tgl_lapor'],
-                      style: const TextStyle(fontWeight: FontWeight.bold),
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 12),
                     ),
                     const Spacer(),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.green[50],
-                        borderRadius: BorderRadius.circular(8),
+                    if (widget.laporan['keterangan'] != null)
+                      Text(
+                        "Ket: ${widget.laporan['keterangan']}",
+                        style: const TextStyle(
+                            color: Colors.white70,
+                            fontStyle: FontStyle.italic,
+                            fontSize: 12),
                       ),
-                      child: Text(
-                        "Sukses",
-                        style: TextStyle(
-                            color: Colors.green[800],
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold),
-                      ),
-                    )
                   ],
-                ),
-                const Divider(height: 20),
-                const Text("Rincian Laporan",
-                    style: TextStyle(color: Colors.grey)),
-                const SizedBox(height: 10),
-
-                // --- RINCIAN PERHITUNGAN ---
-                _buildRow("Total Pemasukan", totalPemasukan),
-                _buildRow("Kontribusi BMT (5%)", kontribusiBmt,
-                    color: Colors.red),
-                const Divider(),
-                _buildRow("Dana Siap Dibagi", danaSiapDibagi,
-                    isBold: true, fontSize: 18, color: Colors.green[800]),
-
-                const SizedBox(height: 8),
-                Text(
-                  "Ket: ${widget.laporan['keterangan']}",
-                  style: const TextStyle(
-                      fontStyle: FontStyle.italic, color: Colors.grey),
-                ),
+                )
               ],
+            ),
+          ),
+
+          const SizedBox(height: 15),
+
+          // Judul List
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                "Rincian Distribusi Pemodal",
+                style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey[700]),
+              ),
             ),
           ),
 
           const SizedBox(height: 10),
 
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                "Distribusi Ke Pemodal (${_listInvestor.length})",
-                style:
-                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-            ),
-          ),
-
-          // --- LIST INVESTOR ---
+          // --- LIST DATA ---
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
                 : _listInvestor.isEmpty
-                    ? const Center(child: Text("Tidak ada data pemodal"))
+                    ? const Center(child: Text("Data pemodal tidak ditemukan"))
                     : ListView.separated(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         itemCount: _listInvestor.length,
@@ -246,20 +256,15 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
                           final investor = _listInvestor[index];
                           double modalDia =
                               (investor['jumlah_modal'] as num).toDouble();
-
-                          // HITUNG BAGI HASIL (DARI DANA SIAP DIBAGI)
-                          double persentase = 0;
-                          double dapatUang = 0;
-
-                          if (_totalModalTerkumpul > 0) {
-                            persentase = (modalDia / _totalModalTerkumpul);
-                            dapatUang = persentase * danaSiapDibagi;
-                          }
+                          double persentase = (_totalModalTerkumpul > 0)
+                              ? (modalDia / _totalModalTerkumpul)
+                              : 0;
+                          double dapatUang = persentase * danaSiapDibagi;
 
                           return Card(
-                            elevation: 1,
+                            elevation: 2,
                             shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10)),
+                                borderRadius: BorderRadius.circular(12)),
                             child: Padding(
                               padding: const EdgeInsets.all(12.0),
                               child: Column(
@@ -277,6 +282,7 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
                                                   fontWeight: FontWeight.bold,
                                                   fontSize: 15),
                                             ),
+                                            const SizedBox(height: 2),
                                             Text(
                                               "Modal: ${_formatter.format(modalDia)}",
                                               style: TextStyle(
@@ -304,36 +310,34 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
                                       )
                                     ],
                                   ),
-                                  const Divider(),
+                                  const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 8),
+                                    child: Divider(height: 1),
+                                  ),
                                   Row(
                                     mainAxisAlignment:
                                         MainAxisAlignment.spaceBetween,
                                     children: [
-                                      // Tombol WA
                                       ElevatedButton.icon(
                                         style: ElevatedButton.styleFrom(
                                           backgroundColor:
                                               const Color(0xFF25D366),
                                           foregroundColor: Colors.white,
                                           padding: const EdgeInsets.symmetric(
-                                              horizontal: 10),
+                                              horizontal: 12, vertical: 0),
                                           minimumSize: const Size(0, 32),
                                           tapTargetSize:
                                               MaterialTapTargetSize.shrinkWrap,
                                         ),
-                                        onPressed: () {
-                                          _kirimWA(
-                                              investor['nama_pemodal'],
-                                              investor['telepon'],
-                                              persentase,
-                                              dapatUang);
-                                        },
+                                        onPressed: () => _kirimWA(
+                                            investor['nama_pemodal'],
+                                            investor['telepon'],
+                                            persentase,
+                                            dapatUang),
                                         icon: const Icon(Icons.share, size: 14),
                                         label: const Text("Kirim WA",
                                             style: TextStyle(fontSize: 12)),
                                       ),
-
-                                      // Nominal Diterima
                                       Text(
                                         _formatter.format(dapatUang),
                                         style: const TextStyle(
