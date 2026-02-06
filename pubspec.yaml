@@ -1,0 +1,35 @@
+name: bmt_almukminin
+description: "Aplikasi Admin BMT Al Mukminin"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  sqflite: ^2.3.0          # Untuk Database SQLite
+  path: ^1.8.3             # Mengatur lokasi file database
+  path_provider: ^2.1.1    # Akses folder internal HP
+  intl: ^0.20.2            # Format mata uang & tanggal Indonesia
+  flutter_email_sender: ^8.0.0 # Untuk fitur backup ke email
+  url_launcher: ^6.2.5     # TAMBAHAN: Untuk membuka WhatsApp
+  share_plus: ^12.0.1  # Untuk mengirim/menyimpan file backup
+  file_picker: ^10.3.10 # Untuk memilih file saat restore
+  google_sign_in: ^6.1.5
+  firebase_core: ^4.4.0
+  firebase_analytics: ^12.1.1
+  googleapis: ^13.0.0
+  extension_google_sign_in_as_googleapis_auth: ^2.0.12
+  flutter_localizations:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

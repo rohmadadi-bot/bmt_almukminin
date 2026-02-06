@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "390538250400",
+    "project_id": "bmt-almukminin",
+    "storage_bucket": "bmt-almukminin.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:390538250400:android:272dac140c840c9fa4e1c5",
+        "android_client_info": {
+          "package_name": "com.example.bmt_almukminin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDkz6LBZpAsdQ24iynGp2djfQIuPBRpHXw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
