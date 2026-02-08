@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // Untuk InputFormatter
 import 'package:intl/intl.dart';
-import '../../data/db_helper.dart';
+// UBAH: Gunakan ApiService
+import '../../services/api_service.dart';
 import 'detail_anggota_page.dart';
 
 class DaftarAnggotaPage extends StatefulWidget {
@@ -12,17 +13,18 @@ class DaftarAnggotaPage extends StatefulWidget {
 }
 
 class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService menggantikan DbHelper
+  final ApiService _apiService = ApiService();
 
   // --- State Utama Halaman ---
-  List<Map<String, dynamic>> _allNasabah = [];
-  List<Map<String, dynamic>> _filteredNasabah = [];
+  // UBAH: Tipe data jadi List<dynamic> karena data dari JSON
+  List<dynamic> _allNasabah = [];
+  List<dynamic> _filteredNasabah = [];
   bool _isLoading = true;
   bool _isSearching = false;
   final TextEditingController _searchController = TextEditingController();
 
   // --- State & Controller untuk Form Bottom Sheet ---
-  // (Pindahkan semua variabel form dari RegistrasiPage ke sini agar bisa diakses oleh BottomSheet)
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _nikController = TextEditingController();
   final TextEditingController _namaController = TextEditingController();
@@ -34,7 +36,7 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
       TextEditingController();
   final TextEditingController _bankManualController = TextEditingController();
 
-  bool _formIsLoading = false; // Loading khusus tombol simpan
+  bool _formIsLoading = false;
   bool _tambahRekening = false;
   String? _bankTerpilih;
 
@@ -53,27 +55,49 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
     _refreshData();
   }
 
-  // --- FUNGSI LOAD DATA ---
-  void _refreshData() async {
+  // --- FUNGSI LOAD DATA (ONLINE) ---
+  Future<void> _refreshData() async {
     setState(() => _isLoading = true);
-    final data = await _dbHelper.getAllAnggota();
-    if (mounted) {
-      setState(() {
-        _allNasabah = data;
-        _filteredNasabah = data;
-        _isLoading = false;
-      });
+
+    try {
+      // UBAH: Ambil data dari API Server
+      final data = await _apiService.getAllAnggota();
+
+      if (mounted) {
+        setState(() {
+          _allNasabah = data;
+          _filteredNasabah = data;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          // Opsional: Kosongkan list jika gagal load
+          _allNasabah = [];
+          _filteredNasabah = [];
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Gagal memuat data: Koneksi bermasalah'),
+              backgroundColor: Colors.red),
+        );
+      }
     }
   }
 
   // --- FUNGSI SEARCH ---
   void _filterSearch(String query) {
     setState(() {
-      _filteredNasabah = _allNasabah
-          .where((nasabah) =>
-              nasabah['nama'].toLowerCase().contains(query.toLowerCase()) ||
-              nasabah['nik'].toLowerCase().contains(query.toLowerCase()))
-          .toList();
+      _filteredNasabah = _allNasabah.where((nasabah) {
+        // Tambahkan null safety check (?? '') karena data dari server bisa null
+        final nama = nasabah['nama']?.toString().toLowerCase() ?? '';
+        final nik = nasabah['nik']?.toString().toLowerCase() ?? '';
+        final searchLower = query.toLowerCase();
+
+        return nama.contains(searchLower) || nik.contains(searchLower);
+      }).toList();
     });
   }
 
@@ -86,14 +110,15 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
     }).join(' ');
   }
 
-  // --- LOGIKA SIMPAN DATA (Dari RegistrasiPage) ---
+  // --- LOGIKA SIMPAN DATA (ONLINE) ---
   void _simpanNasabah(StateSetter setStateSheet) async {
     if (!_formKey.currentState!.validate() || _formIsLoading) return;
 
-    // Gunakan setStateSheet agar UI BottomSheet yang ter-update
     setStateSheet(() => _formIsLoading = true);
 
     String finalNik = _nikController.text.trim();
+
+    // LOGIKA PERTAHANAN: Jika NIK kosong, generate otomatis
     if (finalNik.isEmpty) {
       finalNik = "TMP-${DateTime.now().millisecondsSinceEpoch}";
     }
@@ -119,39 +144,37 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
     };
 
     try {
-      final result = await _dbHelper.insertAnggota(dataNasabah);
+      // UBAH: Panggil API Service untuk insert ke Server
+      final success = await _apiService.insertAnggota(dataNasabah);
 
-      if (result > 0) {
+      if (success) {
         if (mounted) {
           Navigator.pop(context); // Tutup Bottom Sheet
-          _refreshData(); // Refresh List di Halaman Utama
+          _refreshData(); // Refresh List dari Server
           _resetForm(); // Bersihkan Form
 
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-                content: Text('Nasabah Berhasil Didaftarkan!'),
+                content: Text('Nasabah Berhasil Didaftarkan ke Server!'),
                 backgroundColor: Colors.green),
           );
         }
+      } else {
+        throw Exception("Gagal menyimpan ke server");
       }
     } catch (e) {
-      String errorMsg = e.toString().contains('UNIQUE')
-          ? 'Gagal: NIK/ID tersebut sudah terdaftar!'
-          : 'Gagal menyimpan: $e';
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(errorMsg), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Gagal menyimpan: Cek koneksi internet'),
+              backgroundColor: Colors.red),
         );
       }
     } finally {
       if (mounted) {
-        // Matikan loading (jika sheet masih terbuka karena error)
         try {
           setStateSheet(() => _formIsLoading = false);
-        } catch (e) {
-          // Abaikan jika sheet sudah tertutup
-        }
+        } catch (e) {}
       }
     }
   }
@@ -169,7 +192,8 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
     _formIsLoading = false;
   }
 
-  Color _getStatusColor(String status) {
+  Color _getStatusColor(String? status) {
+    // Update terima nullable string
     switch (status) {
       case 'Aktif':
         return Colors.green.shade700;
@@ -184,19 +208,17 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
 
   // --- BOTTOM SHEET FORM ---
   void _showTambahAnggotaSheet() {
-    _resetForm(); // Pastikan form bersih saat dibuka
+    _resetForm();
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor:
-          Colors.transparent, // Transparan agar bisa pakai rounded border
+      backgroundColor: Colors.transparent,
       builder: (context) {
-        // StatefulBuilder agar BottomSheet bisa update state lokal (misal: switch bank)
         return StatefulBuilder(
           builder: (BuildContext context, StateSetter setStateSheet) {
             return Container(
-              height: MediaQuery.of(context).size.height * 0.9, // 90% Layar
+              height: MediaQuery.of(context).size.height * 0.9,
               decoration: const BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -240,7 +262,7 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
                             // SECTION 1: DATA DIRI
                             _buildSectionTitle("Informasi Pribadi"),
                             Card(
-                              elevation: 0, // Flat style agar menyatu
+                              elevation: 0,
                               color: Colors.grey[50],
                               shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(12),
@@ -256,9 +278,11 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
                                       inputFormatters: [
                                         FilteringTextInputFormatter.digitsOnly
                                       ],
+                                      // TIDAK ADA VALIDATOR AGAR BOLEH KOSONG (Auto Generate)
                                       decoration: _inputDecoration(
                                           'NIK', Icons.credit_card,
-                                          hint: 'Kosongkan jika belum ada'),
+                                          hint:
+                                              'Kosongkan jika belum ada (Auto)'),
                                     ),
                                     const SizedBox(height: 16),
                                     TextFormField(
@@ -363,14 +387,13 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
                                                   items: _daftarBank
                                                       .map((String bank) {
                                                     return DropdownMenuItem<
-                                                        String>(
-                                                      value: bank,
-                                                      child: Text(bank,
-                                                          style:
-                                                              const TextStyle(
-                                                                  fontSize:
-                                                                      14)),
-                                                    );
+                                                            String>(
+                                                        value: bank,
+                                                        child: Text(bank,
+                                                            style:
+                                                                const TextStyle(
+                                                                    fontSize:
+                                                                        14)));
                                                   }).toList(),
                                                   onChanged: (value) {
                                                     setStateSheet(() =>
@@ -414,7 +437,6 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
                               ),
                             ),
 
-                            // Spacer agar tombol tidak tertutup keyboard
                             SizedBox(
                                 height:
                                     MediaQuery.of(context).viewInsets.bottom +
@@ -456,11 +478,9 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
                                 height: 20,
                                 child: CircularProgressIndicator(
                                     color: Colors.white, strokeWidth: 2))
-                            : const Icon(Icons.save),
+                            : const Icon(Icons.cloud_upload), // Icon Cloud
                         label: Text(
-                          _formIsLoading
-                              ? 'MENYIMPAN...'
-                              : 'SIMPAN DATA NASABAH',
+                          _formIsLoading ? 'MENYIMPAN...' : 'SIMPAN KE SERVER',
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                       ),
@@ -475,7 +495,6 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
     );
   }
 
-  // Helper Input Decoration agar konsisten
   InputDecoration _inputDecoration(String label, IconData? icon,
       {String? hint}) {
     return InputDecoration(
@@ -489,18 +508,16 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
     );
   }
 
-  // Widget Helper Judul Section
   Widget _buildSectionTitle(String title) {
     return Padding(
       padding: const EdgeInsets.only(left: 4, bottom: 8),
       child: Text(
         title.toUpperCase(),
         style: TextStyle(
-          color: Colors.grey[700],
-          fontWeight: FontWeight.bold,
-          fontSize: 12,
-          letterSpacing: 1.0,
-        ),
+            color: Colors.grey[700],
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+            letterSpacing: 1.0),
       ),
     );
   }
@@ -524,7 +541,7 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
                 ),
                 onChanged: _filterSearch,
               )
-            : const Text('Daftar Anggota'),
+            : const Text('Anggota (Online)'),
         actions: [
           IconButton(
             icon: Icon(_isSearching ? Icons.close : Icons.search),
@@ -545,8 +562,6 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
                 icon: const Icon(Icons.refresh), onPressed: _refreshData),
         ],
       ),
-
-      // TOMBOL FLOATING KANAN BAWAH
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _showTambahAnggotaSheet,
@@ -555,7 +570,6 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
         label: const Text("Tambah Anggota",
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
       ),
-
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _filteredNasabah.isEmpty
@@ -576,10 +590,12 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.search_off, size: 80, color: Colors.grey.shade400),
+          Icon(Icons.cloud_off, size: 80, color: Colors.grey.shade400),
           const SizedBox(height: 16),
           Text(
-            _isSearching ? 'Nasabah tidak ditemukan' : 'Belum ada data nasabah',
+            _isSearching
+                ? 'Nasabah tidak ditemukan'
+                : 'Belum ada data di Server',
             style: TextStyle(color: Colors.grey.shade600, fontSize: 16),
           ),
         ],
@@ -587,7 +603,8 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
     );
   }
 
-  Widget _buildNasabahCard(Map<String, dynamic> nasabah) {
+  Widget _buildNasabahCard(dynamic nasabah) {
+    // Pakai dynamic untuk handle JSON
     return InkWell(
       onTap: () {
         Navigator.push(
@@ -616,7 +633,7 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
               radius: 25,
               backgroundColor: const Color(0xFFE8F5E9),
               child: Text(
-                nasabah['nama'].isNotEmpty
+                (nasabah['nama'] != null && nasabah['nama'].isNotEmpty)
                     ? nasabah['nama'][0].toUpperCase()
                     : '?',
                 style: const TextStyle(
@@ -630,11 +647,11 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(nasabah['nama'],
+                  Text(nasabah['nama'] ?? '-',
                       style: const TextStyle(
                           fontSize: 16, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 4),
-                  Text('ID: ${nasabah['nik']}',
+                  Text('NIK: ${nasabah['nik'] ?? '-'}',
                       style:
                           TextStyle(color: Colors.grey.shade600, fontSize: 13)),
                 ],
@@ -647,7 +664,7 @@ class _DaftarAnggotaPageState extends State<DaftarAnggotaPage> {
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(color: _getStatusColor(nasabah['status'])),
               ),
-              child: Text(nasabah['status'],
+              child: Text(nasabah['status'] ?? 'Aktif',
                   style: TextStyle(
                       color: _getStatusColor(nasabah['status']),
                       fontSize: 11,

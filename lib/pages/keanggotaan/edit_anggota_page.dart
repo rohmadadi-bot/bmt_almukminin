@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import '../../data/db_helper.dart';
+// UBAH: Gunakan ApiService
+import '../../services/api_service.dart';
 
 class EditAnggotaPage extends StatefulWidget {
   final Map<String, dynamic> nasabah;
@@ -11,7 +12,8 @@ class EditAnggotaPage extends StatefulWidget {
 
 class _EditAnggotaPageState extends State<EditAnggotaPage> {
   final _formKey = GlobalKey<FormState>();
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
 
   // Controller Input
   late TextEditingController _nikController;
@@ -94,6 +96,7 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
     }).join(' ');
   }
 
+  // UBAH: Logika Update ke Server
   void _updateNasabah() async {
     if (!_formKey.currentState!.validate() || _isLoading) return;
     setState(() => _isLoading = true);
@@ -109,30 +112,38 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
     }
 
     Map<String, dynamic> dataUpdate = {
-      'id': widget.nasabah['id'], // ID Database tetap
+      'id': widget.nasabah['id'], // Penting: ID Database Server
       'nik': _nikController.text.trim().toUpperCase(),
       'nama': _capitalize(_namaController.text.trim()),
       'telepon': _teleponController.text.trim(),
       'alamat': _capitalize(_alamatController.text.trim()),
       'rekening_bank': infoRekening,
       'status': _selectedStatus,
-      'updated_at': DateTime.now().toString(),
+      // 'updated_at': DateTime.now().toString(), // Server biasanya handle otomatis
     };
 
     try {
-      await _dbHelper.updateAnggota(dataUpdate);
+      // UBAH: Panggil API Update
+      final success = await _apiService.updateAnggota(dataUpdate);
+
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Data Berhasil Diperbarui!'),
-              backgroundColor: Colors.green),
-        );
-        Navigator.pop(context, true); // Kembali dengan sinyal refresh
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Data Berhasil Diperbarui di Server!'),
+                backgroundColor: Colors.green),
+          );
+          Navigator.pop(context, true); // Kembali dengan sinyal refresh
+        } else {
+          throw Exception("Gagal update data");
+        }
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Gagal: $e'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Gagal Update: Cek koneksi internet'),
+              backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -144,7 +155,7 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Edit Anggota'),
+        title: const Text('Edit Anggota (Online)'),
         backgroundColor: const Color(0xFF2E7D32),
         foregroundColor: Colors.white,
       ),

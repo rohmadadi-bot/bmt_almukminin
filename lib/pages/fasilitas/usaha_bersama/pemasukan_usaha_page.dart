@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../../data/db_helper.dart';
+// UBAH: Gunakan ApiService
+import '../../../services/api_service.dart';
 
 class PemasukanUsahaPage extends StatefulWidget {
   final Map<String, dynamic> usaha;
@@ -12,11 +13,12 @@ class PemasukanUsahaPage extends StatefulWidget {
 }
 
 class _PemasukanUsahaPageState extends State<PemasukanUsahaPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
   final NumberFormat _currencyFormatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _listPemasukan = [];
+  List<dynamic> _listPemasukan = [];
   double _totalBelumDibagi = 0; // Saldo Aktif
   double _totalPemasukanAll = 0; // Akumulasi Semua Waktu
   bool _isLoading = true;
@@ -28,13 +30,16 @@ class _PemasukanUsahaPageState extends State<PemasukanUsahaPage> {
   }
 
   Future<void> _loadData() async {
-    final data = await _dbHelper.getPemasukanByUsahaId(widget.usaha['id']);
+    int usahaId = int.tryParse(widget.usaha['id'].toString()) ?? 0;
+
+    // Panggil API
+    final data = await _apiService.getPemasukanUsaha(usahaId);
 
     double totalBelum = 0;
     double totalAll = 0;
 
     for (var item in data) {
-      double jumlah = (item['jumlah'] as num).toDouble();
+      double jumlah = double.tryParse(item['jumlah'].toString()) ?? 0;
 
       // Hitung Total Semua Pemasukan
       totalAll += jumlah;
@@ -55,20 +60,30 @@ class _PemasukanUsahaPageState extends State<PemasukanUsahaPage> {
     }
   }
 
-  // --- HAPUS DATA ---
+  // --- HAPUS DATA (ONLINE) ---
   void _hapusData(int id) async {
-    await _dbHelper.deletePemasukan(id);
+    bool success = await _apiService.deletePemasukanUsaha(id);
+
     if (mounted) {
-      Navigator.pop(context); // Tutup Detail Sheet
-      _loadData(); // Refresh Data
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("Data berhasil dihapus")));
+      if (success) {
+        Navigator.pop(context); // Tutup Detail Sheet
+        _loadData(); // Refresh Data
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Data berhasil dihapus")));
+      } else {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("Gagal menghapus data"),
+            backgroundColor: Colors.red));
+      }
     }
   }
 
   // --- DETAIL SHEET (Updated: Ada Tombol Hapus) ---
   void _showDetailSheet(Map<String, dynamic> item) {
     bool isLocked = item['status'] == 'Sudah Dibagi';
+    int id = int.tryParse(item['id'].toString()) ?? 0;
+    double jumlah = double.tryParse(item['jumlah'].toString()) ?? 0;
 
     showModalBottomSheet(
       context: context,
@@ -133,7 +148,7 @@ class _PemasukanUsahaPageState extends State<PemasukanUsahaPage> {
                           style:
                               TextStyle(color: Colors.teal[800], fontSize: 12)),
                       const SizedBox(height: 5),
-                      Text(_currencyFormatter.format(item['jumlah']),
+                      Text(_currencyFormatter.format(jumlah),
                           style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 26,
@@ -164,10 +179,8 @@ class _PemasukanUsahaPageState extends State<PemasukanUsahaPage> {
                                             child: const Text("Batal")),
                                         TextButton(
                                             onPressed: () {
-                                              Navigator.pop(
-                                                  ctx); // Tutup Dialog
-                                              _hapusData(item[
-                                                  'id']); // Hapus & Tutup Sheet
+                                              Navigator.pop(ctx);
+                                              _hapusData(id);
                                             },
                                             child: const Text("Hapus",
                                                 style: TextStyle(
@@ -250,7 +263,7 @@ class _PemasukanUsahaPageState extends State<PemasukanUsahaPage> {
     final jumlahController = TextEditingController();
     final ketController = TextEditingController();
     final dateController = TextEditingController(
-        text: DateFormat('dd/MM/yyyy').format(DateTime.now()));
+        text: DateFormat('yyyy-MM-dd').format(DateTime.now())); // Format SQL
     final formKey = GlobalKey<FormState>();
 
     showModalBottomSheet(
@@ -358,7 +371,7 @@ class _PemasukanUsahaPageState extends State<PemasukanUsahaPage> {
                                 );
                                 if (picked != null) {
                                   dateController.text =
-                                      DateFormat('dd/MM/yyyy').format(picked);
+                                      DateFormat('yyyy-MM-dd').format(picked);
                                 }
                               },
                             ),
@@ -406,10 +419,13 @@ class _PemasukanUsahaPageState extends State<PemasukanUsahaPage> {
                                 .replaceAll('.', '')
                                 .replaceAll(',', '');
                             double nominal = double.parse(cleanJumlah);
+                            int usahaId =
+                                int.tryParse(widget.usaha['id'].toString()) ??
+                                    0;
 
-                            // 1. Simpan ke Database & Ambil ID
-                            int newId = await _dbHelper.insertPemasukan({
-                              'usaha_id': widget.usaha['id'],
+                            // 1. Simpan ke Database API & Ambil ID
+                            int newId = await _apiService.insertPemasukanUsaha({
+                              'usaha_id': usahaId,
                               'jumlah': nominal,
                               'tgl_transaksi': dateController.text,
                               'keterangan': ketController.text,
@@ -417,23 +433,30 @@ class _PemasukanUsahaPageState extends State<PemasukanUsahaPage> {
                             });
 
                             if (mounted) {
-                              // 2. Tutup Form Sheet
-                              Navigator.pop(context);
+                              if (newId > 0) {
+                                // 2. Tutup Form Sheet
+                                Navigator.pop(context);
 
-                              // 3. Refresh Data di Halaman
-                              _loadData();
+                                // 3. Refresh Data di Halaman
+                                _loadData();
 
-                              // 4. Siapkan Data Baru
-                              Map<String, dynamic> newItem = {
-                                'id': newId,
-                                'jumlah': nominal,
-                                'tgl_transaksi': dateController.text,
-                                'keterangan': ketController.text,
-                                'status': 'Belum Dibagi'
-                              };
+                                // 4. Siapkan Data Baru
+                                Map<String, dynamic> newItem = {
+                                  'id': newId,
+                                  'jumlah': nominal,
+                                  'tgl_transaksi': dateController.text,
+                                  'keterangan': ketController.text,
+                                  'status': 'Belum Dibagi'
+                                };
 
-                              // 5. Buka Detail Sheet Secara Otomatis
-                              _showDetailSheet(newItem);
+                                // 5. Buka Detail Sheet Secara Otomatis
+                                _showDetailSheet(newItem);
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                        content: Text("Gagal menyimpan data"),
+                                        backgroundColor: Colors.red));
+                              }
                             }
                           }
                         },
@@ -549,6 +572,8 @@ class _PemasukanUsahaPageState extends State<PemasukanUsahaPage> {
                         itemBuilder: (context, index) {
                           final item = _listPemasukan[index];
                           bool isLocked = item['status'] == 'Sudah Dibagi';
+                          double jumlah =
+                              double.tryParse(item['jumlah'].toString()) ?? 0;
 
                           return Card(
                             elevation: 2,
@@ -570,7 +595,7 @@ class _PemasukanUsahaPageState extends State<PemasukanUsahaPage> {
                                         : Colors.teal[800]),
                               ),
                               title: Text(
-                                _currencyFormatter.format(item['jumlah']),
+                                _currencyFormatter.format(jumlah),
                                 style: const TextStyle(
                                     fontWeight: FontWeight.bold, fontSize: 16),
                               ),

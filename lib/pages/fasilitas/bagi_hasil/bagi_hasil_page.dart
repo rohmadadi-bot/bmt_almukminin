@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../../data/db_helper.dart';
+// UBAH: Gunakan ApiService
+import '../../../services/api_service.dart';
 import 'menu_bagi_hasil_page.dart';
 
 class BagiHasilPage extends StatefulWidget {
@@ -11,12 +12,14 @@ class BagiHasilPage extends StatefulWidget {
 }
 
 class _BagiHasilPageState extends State<BagiHasilPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
+
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _listMudharabah = [];
-  List<Map<String, dynamic>> _listAnggota = [];
+  List<dynamic> _listMudharabah = [];
+  List<dynamic> _listAnggota = []; // Data Nasabah dari API
   bool _isLoading = true;
 
   // Variabel Statistik Header
@@ -31,48 +34,54 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
     _loadAnggota();
   }
 
+  // LOAD DATA DARI API
   Future<void> _loadData() async {
-    final data = await _dbHelper.getAllMudharabah();
+    if (mounted) setState(() => _isLoading = true);
 
-    // Hitung Statistik
-    double tempDana = 0;
-    int tempAktif = 0;
-    int tempPengajuan = 0;
+    try {
+      final result = await _apiService.getMudharabah();
 
-    for (var item in data) {
-      String status = item['status'] ?? 'Pengajuan';
-      double modal = (item['nominal_modal'] as num?)?.toDouble() ?? 0;
+      if (mounted) {
+        if (result['status'] == true) {
+          final stats = result['stats'];
+          final data = result['data'] ?? [];
 
-      if (status == 'Disetujui') {
-        tempDana += modal;
-        tempAktif++;
-      } else if (status == 'Pengajuan') {
-        tempPengajuan++;
+          setState(() {
+            _listMudharabah = data;
+
+            // Parsing Statistik Aman
+            if (stats != null) {
+              _totalDanaTerserap =
+                  double.tryParse(stats['total_dana'].toString()) ?? 0;
+              _countAktif = int.tryParse(stats['aktif'].toString()) ?? 0;
+              _countPengajuan =
+                  int.tryParse(stats['pengajuan'].toString()) ?? 0;
+            }
+
+            _isLoading = false;
+          });
+        } else {
+          setState(() => _isLoading = false);
+        }
       }
-    }
-
-    if (mounted) {
-      setState(() {
-        _listMudharabah = data;
-        _totalDanaTerserap = tempDana;
-        _countAktif = tempAktif;
-        _countPengajuan = tempPengajuan;
-        _isLoading = false;
-      });
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _loadAnggota() async {
-    final data = await _dbHelper.getAllAnggota();
-    setState(() {
-      _listAnggota = data;
-    });
+    final data = await _apiService.getAllAnggota();
+    if (mounted) {
+      setState(() {
+        _listAnggota = data;
+      });
+    }
   }
 
-  // --- 1. SEARCH NASABAH (BOTTOM SHEET) ---
-  Future<Map<String, dynamic>?> _showSearchAnggotaSheet() {
-    List<Map<String, dynamic>> filtered = List.from(_listAnggota);
-    return showModalBottomSheet<Map<String, dynamic>>(
+  // --- 1. SEARCH NASABAH (BOTTOM SHEET - ONLINE) ---
+  Future<dynamic> _showSearchAnggotaSheet() {
+    List<dynamic> filtered = List.from(_listAnggota);
+    return showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -124,6 +133,7 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
                             setStateSheet(() {
                               filtered = _listAnggota
                                   .where((a) => a['nama']
+                                      .toString()
                                       .toLowerCase()
                                       .contains(val.toLowerCase()))
                                   .toList();
@@ -147,16 +157,17 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
                                   return ListTile(
                                     leading: CircleAvatar(
                                       backgroundColor: Colors.green[50],
-                                      child: Text(item['nama'][0].toUpperCase(),
+                                      child: Text(
+                                          (item['nama'] ?? '?')[0]
+                                              .toUpperCase(),
                                           style: TextStyle(
                                               color: Colors.green[800],
                                               fontWeight: FontWeight.bold)),
                                     ),
-                                    title: Text(item['nama'],
+                                    title: Text(item['nama'] ?? '-',
                                         style: const TextStyle(
                                             fontWeight: FontWeight.bold)),
-                                    subtitle:
-                                        Text("NIK: ${item['nik'] ?? '-'}"),
+                                    subtitle: Text("ID: ${item['nik'] ?? '-'}"),
                                     onTap: () => Navigator.pop(context, item),
                                   );
                                 },
@@ -173,14 +184,14 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
     );
   }
 
-  // --- 2. TAMBAH AKAD (BOTTOM SHEET PERBAIKAN KEYBOARD) ---
+  // --- 2. TAMBAH AKAD (BOTTOM SHEET - ONLINE) ---
   void _showTambahSheet() {
     final namaUsahaController = TextEditingController();
     final deskripsiController = TextEditingController();
     final nominalController = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
-    Map<String, dynamic>? selectedNasabah;
+    Map<String, dynamic>? selectedNasabah; // Perbaikan Tipe
     String? namaNasabahTampil;
     String selectedNisbah = '60 : 40';
 
@@ -194,6 +205,7 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
 
     Future<void> prosesSimpan(String statusSimpan) async {
       if (formKey.currentState!.validate() && selectedNasabah != null) {
+        // Parsing
         double nominal = double.tryParse(nominalController.text
                 .replaceAll('.', '')
                 .replaceAll(',', '')) ??
@@ -202,40 +214,51 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
         double nNasabah = double.parse(parts[0]);
         double nBmt = double.parse(parts[1]);
 
-        int id = await _dbHelper.insertMudharabah({
-          'nasabah_id': selectedNasabah!['id'],
+        int nasabahId = int.tryParse(selectedNasabah!['id'].toString()) ?? 0;
+
+        // UBAH: Kirim ke API
+        int newId = await _apiService.insertMudharabah({
+          'nasabah_id': nasabahId,
           'nama_usaha': namaUsahaController.text,
           'deskripsi_usaha': deskripsiController.text,
           'nominal_modal': nominal,
           'nisbah_nasabah': nNasabah,
           'nisbah_bmt': nBmt,
-          'tgl_akad': DateFormat('dd/MM/yyyy').format(DateTime.now()),
+          'tgl_akad':
+              DateFormat('yyyy-MM-dd').format(DateTime.now()), // Format SQL
           'status': statusSimpan
         });
 
         if (mounted) {
-          Navigator.pop(context); // Tutup Sheet
-          _loadData(); // Refresh list
+          if (newId > 0) {
+            Navigator.pop(context); // Tutup Sheet
+            _loadData(); // Refresh list
 
-          Map<String, dynamic> newData = {
-            'id': id,
-            'nasabah_id': selectedNasabah!['id'],
-            'nama_nasabah': selectedNasabah!['nama'],
-            'nama_usaha': namaUsahaController.text,
-            'deskripsi_usaha': deskripsiController.text,
-            'nominal_modal': nominal,
-            'nisbah_nasabah': nNasabah,
-            'nisbah_bmt': nBmt,
-            'tgl_akad': DateFormat('dd/MM/yyyy').format(DateTime.now()),
-            'status': statusSimpan
-          };
+            // Data untuk pindah halaman
+            Map<String, dynamic> newData = {
+              'id': newId,
+              'nasabah_id': nasabahId,
+              'nama_nasabah': selectedNasabah!['nama'],
+              'nama_usaha': namaUsahaController.text,
+              'deskripsi_usaha': deskripsiController.text,
+              'nominal_modal': nominal,
+              'nisbah_nasabah': nNasabah,
+              'nisbah_bmt': nBmt,
+              'tgl_akad': DateFormat('yyyy-MM-dd').format(DateTime.now()),
+              'status': statusSimpan
+            };
 
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => MenuBagiHasilPage(akadData: newData),
-            ),
-          );
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => MenuBagiHasilPage(akadData: newData),
+              ),
+            );
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text("Gagal menyimpan data ke Server"),
+                backgroundColor: Colors.red));
+          }
         }
       } else if (selectedNasabah == null) {
         ScaffoldMessenger.of(context)
@@ -245,12 +268,10 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
 
     showModalBottomSheet(
       context: context,
-      isScrollControlled:
-          true, // Wajib true agar bisa resize saat keyboard muncul
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateSheet) {
-          // PENTING: Bungkus dengan Padding yang mengikuti viewInsets (Keyboard)
           return Padding(
             padding: EdgeInsets.only(
               bottom: MediaQuery.of(context).viewInsets.bottom,
@@ -259,7 +280,7 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
               initialChildSize: 0.9,
               minChildSize: 0.5,
               maxChildSize: 0.95,
-              expand: false, // Wajib false agar bisa didorong keyboard
+              expand: false,
               builder: (context, scrollController) {
                 return Container(
                   decoration: const BoxDecoration(
@@ -312,7 +333,7 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
                         ),
                       ),
 
-                      // Form Content (Scrollable)
+                      // Form Content
                       Expanded(
                         child: SingleChildScrollView(
                           controller: scrollController,
@@ -334,7 +355,8 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
                                         await _showSearchAnggotaSheet();
                                     if (result != null) {
                                       setStateSheet(() {
-                                        selectedNasabah = result;
+                                        selectedNasabah =
+                                            Map<String, dynamic>.from(result);
                                         namaNasabahTampil = result['nama'];
                                       });
                                     }
@@ -376,7 +398,6 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
                                   ),
                                 ),
                                 const SizedBox(height: 15),
-
                                 const Text("Informasi Usaha",
                                     style: TextStyle(
                                         fontWeight: FontWeight.bold,
@@ -390,7 +411,6 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
                                     "Rencana/Deskripsi", Icons.description,
                                     maxLines: 2),
                                 const SizedBox(height: 15),
-
                                 const Text("Skema Keuangan",
                                     style: TextStyle(
                                         fontWeight: FontWeight.bold,
@@ -403,7 +423,6 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
                                     Icons.monetization_on,
                                     isNumber: true),
                                 const SizedBox(height: 10),
-
                                 Container(
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 15),
@@ -454,16 +473,14 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
                                     ],
                                   ),
                                 ),
-                                const SizedBox(
-                                    height:
-                                        20), // Spacer agar tidak terlalu mepet bawah saat scroll
+                                const SizedBox(height: 20),
                               ],
                             ),
                           ),
                         ),
                       ),
 
-                      // Footer Buttons (Ikut naik dengan keyboard)
+                      // Footer Buttons
                       Container(
                         padding: const EdgeInsets.all(20),
                         decoration:
@@ -686,166 +703,198 @@ class _BagiHasilPageState extends State<BagiHasilPage> {
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : _listMudharabah.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.handshake_outlined,
-                                size: 80, color: Colors.grey[300]),
-                            const SizedBox(height: 15),
-                            const Text("Belum ada akad",
-                                style: TextStyle(
-                                    color: Colors.grey, fontSize: 16)),
-                            const SizedBox(height: 5),
-                            const Text("Tekan tombol + untuk membuat akad baru",
-                                style: TextStyle(
-                                    color: Colors.grey, fontSize: 12)),
-                          ],
-                        ),
-                      )
-                    : ListView.separated(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
-                        itemCount: _listMudharabah.length,
-                        separatorBuilder: (ctx, i) =>
-                            const SizedBox(height: 12),
-                        itemBuilder: (context, index) {
-                          final item = _listMudharabah[index];
-                          String status = item['status'] ?? 'Pengajuan';
-
-                          // --- LOGIKA WARNA STATUS ---
-                          Color statusColor;
-                          Color bgStatus;
-
-                          if (status == 'Disetujui') {
-                            statusColor = const Color(0xFF2E7D32); // Hijau Tua
-                            bgStatus = Colors.green[50]!;
-                          } else if (status == 'Ditolak') {
-                            statusColor = Colors.red[800]!; // Merah
-                            bgStatus = Colors.red[50]!;
-                          } else if (status == 'Selesai') {
-                            statusColor = Colors.blueGrey[800]!; // Abu-abu
-                            bgStatus = Colors.blueGrey[50]!;
-                          } else {
-                            // Default: Pengajuan
-                            statusColor = Colors.orange[800]!; // Kuning/Orange
-                            bgStatus = Colors.orange[50]!;
-                          }
-
-                          return Card(
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(15),
-                                side: BorderSide(color: Colors.grey[200]!)),
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(15),
-                              onTap: () async {
-                                await Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                        builder: (context) =>
-                                            MenuBagiHasilPage(akadData: item)));
-                                _loadData(); // Refresh list saat kembali
-                              },
-                              child: Padding(
-                                padding: const EdgeInsets.all(16),
+                : RefreshIndicator(
+                    onRefresh: () => _loadData(),
+                    child: _listMudharabah.isEmpty
+                        ? ListView(
+                            // Wrap with ListView to allow pull refresh on empty
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            children: [
+                              SizedBox(
+                                  height: MediaQuery.of(context).size.height *
+                                      0.15),
+                              Center(
                                 child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Row(
+                                    Icon(Icons.handshake_outlined,
+                                        size: 80, color: Colors.grey[300]),
+                                    const SizedBox(height: 15),
+                                    const Text("Belum ada akad",
+                                        style: TextStyle(
+                                            color: Colors.grey, fontSize: 16)),
+                                    const SizedBox(height: 5),
+                                    const Text(
+                                        "Tekan tombol + untuk membuat akad baru",
+                                        style: TextStyle(
+                                            color: Colors.grey, fontSize: 12)),
+                                  ],
+                                ),
+                              )
+                            ],
+                          )
+                        : ListView.separated(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 8),
+                            itemCount: _listMudharabah.length,
+                            separatorBuilder: (ctx, i) =>
+                                const SizedBox(height: 12),
+                            itemBuilder: (context, index) {
+                              final item = _listMudharabah[index];
+                              String status = item['status'] ?? 'Pengajuan';
+                              double modal = double.tryParse(
+                                      item['nominal_modal'].toString()) ??
+                                  0;
+                              double nisbahN = double.tryParse(
+                                      item['nisbah_nasabah'].toString()) ??
+                                  0;
+                              double nisbahB = double.tryParse(
+                                      item['nisbah_bmt'].toString()) ??
+                                  0;
+
+                              // --- LOGIKA WARNA STATUS ---
+                              Color statusColor;
+                              Color bgStatus;
+
+                              if (status == 'Disetujui') {
+                                statusColor =
+                                    const Color(0xFF2E7D32); // Hijau Tua
+                                bgStatus = Colors.green[50]!;
+                              } else if (status == 'Ditolak') {
+                                statusColor = Colors.red[800]!; // Merah
+                                bgStatus = Colors.red[50]!;
+                              } else if (status == 'Selesai') {
+                                statusColor = Colors.blueGrey[800]!; // Abu-abu
+                                bgStatus = Colors.blueGrey[50]!;
+                              } else {
+                                // Default: Pengajuan
+                                statusColor =
+                                    Colors.orange[800]!; // Kuning/Orange
+                                bgStatus = Colors.orange[50]!;
+                              }
+
+                              return Card(
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(15),
+                                    side: BorderSide(color: Colors.grey[200]!)),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(15),
+                                  onTap: () async {
+                                    await Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                            builder: (context) =>
+                                                MenuBagiHasilPage(
+                                                    akadData: item)));
+                                    _loadData(); // Refresh list saat kembali
+                                  },
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(16),
+                                    child: Column(
                                       children: [
-                                        Container(
-                                          padding: const EdgeInsets.all(10),
-                                          decoration: BoxDecoration(
-                                              color: Colors.blue[50],
-                                              borderRadius:
-                                                  BorderRadius.circular(12)),
-                                          child: const Icon(Icons.store,
-                                              color: Colors.blue),
-                                        ),
-                                        const SizedBox(width: 15),
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                  item['nama_usaha'] ??
-                                                      'Tanpa Nama',
-                                                  style: const TextStyle(
+                                        Row(
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.all(10),
+                                              decoration: BoxDecoration(
+                                                  color: Colors.blue[50],
+                                                  borderRadius:
+                                                      BorderRadius.circular(
+                                                          12)),
+                                              child: const Icon(Icons.store,
+                                                  color: Colors.blue),
+                                            ),
+                                            const SizedBox(width: 15),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                      item['nama_usaha'] ??
+                                                          'Tanpa Nama',
+                                                      style: const TextStyle(
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                          fontSize: 16)),
+                                                  const SizedBox(height: 4),
+                                                  Text(
+                                                      item['nama_nasabah'] ??
+                                                          '-',
+                                                      style: const TextStyle(
+                                                          color: Colors.grey,
+                                                          fontSize: 13)),
+                                                ],
+                                              ),
+                                            ),
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 10,
+                                                      vertical: 5),
+                                              decoration: BoxDecoration(
+                                                  color: bgStatus,
+                                                  borderRadius:
+                                                      BorderRadius.circular(8)),
+                                              child: Text(status,
+                                                  style: TextStyle(
+                                                      color: statusColor,
                                                       fontWeight:
                                                           FontWeight.bold,
-                                                      fontSize: 16)),
-                                              const SizedBox(height: 4),
-                                              Text(item['nama_nasabah'] ?? '-',
-                                                  style: const TextStyle(
-                                                      color: Colors.grey,
-                                                      fontSize: 13)),
-                                            ],
-                                          ),
+                                                      fontSize: 11)),
+                                            )
+                                          ],
                                         ),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 10, vertical: 5),
-                                          decoration: BoxDecoration(
-                                              color: bgStatus,
-                                              borderRadius:
-                                                  BorderRadius.circular(8)),
-                                          child: Text(status,
-                                              style: TextStyle(
-                                                  color: statusColor,
-                                                  fontWeight: FontWeight.bold,
-                                                  fontSize: 11)),
+                                        const SizedBox(height: 15),
+                                        const Divider(height: 1),
+                                        const SizedBox(height: 10),
+                                        Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                const Text("Modal Usaha",
+                                                    style: TextStyle(
+                                                        fontSize: 11,
+                                                        color: Colors.grey)),
+                                                Text(_formatter.format(modal),
+                                                    style: const TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                        fontSize: 14)),
+                                              ],
+                                            ),
+                                            Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.end,
+                                              children: [
+                                                const Text("Bagi Hasil (N:B)",
+                                                    style: TextStyle(
+                                                        fontSize: 11,
+                                                        color: Colors.grey)),
+                                                Text(
+                                                    "${nisbahN.toInt()} : ${nisbahB.toInt()}",
+                                                    style: const TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                        fontSize: 14)),
+                                              ],
+                                            ),
+                                          ],
                                         )
                                       ],
                                     ),
-                                    const SizedBox(height: 15),
-                                    const Divider(height: 1),
-                                    const SizedBox(height: 10),
-                                    Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            const Text("Modal Usaha",
-                                                style: TextStyle(
-                                                    fontSize: 11,
-                                                    color: Colors.grey)),
-                                            Text(
-                                                _formatter.format(
-                                                    item['nominal_modal'] ?? 0),
-                                                style: const TextStyle(
-                                                    fontWeight: FontWeight.bold,
-                                                    fontSize: 14)),
-                                          ],
-                                        ),
-                                        Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.end,
-                                          children: [
-                                            const Text("Bagi Hasil (N:B)",
-                                                style: TextStyle(
-                                                    fontSize: 11,
-                                                    color: Colors.grey)),
-                                            Text(
-                                                "${(item['nisbah_nasabah'] as num).toInt()} : ${(item['nisbah_bmt'] as num).toInt()}",
-                                                style: const TextStyle(
-                                                    fontWeight: FontWeight.bold,
-                                                    fontSize: 14)),
-                                          ],
-                                        ),
-                                      ],
-                                    )
-                                  ],
+                                  ),
                                 ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
+                              );
+                            },
+                          ),
+                  ),
           ),
         ],
       ),

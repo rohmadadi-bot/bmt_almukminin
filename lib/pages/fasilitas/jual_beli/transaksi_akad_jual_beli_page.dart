@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../../../data/db_helper.dart';
+// UBAH: Gunakan ApiService
+import '../../../services/api_service.dart';
 import 'detail_akad_jual_beli_page.dart';
 
 // --- BAGIAN 1: DASHBOARD ---
@@ -14,11 +15,13 @@ class TransaksiAkadJualBeliPage extends StatefulWidget {
 }
 
 class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
+
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _riwayatAkad = [];
+  List<dynamic> _riwayatAkad = []; // List Dynamic untuk JSON
   double _totalPiutang = 0;
   bool _isLoading = true;
 
@@ -28,40 +31,49 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
     _loadData();
   }
 
+  // LOAD DATA DARI API
   Future<void> _loadData() async {
-    final db = await _dbHelper.database;
-    final data = await db.rawQuery('''
-      SELECT m.*, a.nama as nama_nasabah, a.telepon 
-      FROM murabahah_akad m
-      JOIN anggota a ON m.nasabah_id = a.id
-      ORDER BY m.id DESC
-    ''');
+    setState(() => _isLoading = true);
 
-    double total = 0;
-    for (var item in data) {
-      if (item['status'] == 'Disetujui') {
-        total += (item['total_piutang'] as num).toDouble();
+    try {
+      final data = await _apiService.getAkadJualBeli();
+
+      double total = 0;
+      for (var item in data) {
+        // Parsing aman
+        double piutang = double.tryParse(item['total_piutang'].toString()) ?? 0;
+
+        if (item['status'] == 'Disetujui') {
+          total += piutang;
+        }
       }
-    }
 
-    if (mounted) {
-      setState(() {
-        _riwayatAkad = data;
-        _totalPiutang = total;
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _riwayatAkad = data;
+          _totalPiutang = total;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
+  // UPDATE STATUS KE API
   Future<void> _toggleStatus(int id, String currentStatus) async {
     String newStatus = currentStatus == 'Pengajuan' ? 'Disetujui' : 'Pengajuan';
-    final db = await _dbHelper.database;
-    await db.rawUpdate(
-        'UPDATE murabahah_akad SET status = ? WHERE id = ?', [newStatus, id]);
-    _loadData();
+
+    bool success = await _apiService.updateStatusAkad(id, newStatus);
+    if (success) {
+      _loadData(); // Refresh jika berhasil
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Gagal update status. Cek koneksi.")));
+    }
   }
 
-  // --- LOGIKA WA (UPDATE: Tambah Status) ---
+  // --- LOGIKA WA ---
   String _formatPhone(String rawPhone) {
     String digitsOnly = rawPhone.replaceAll(RegExp(r'[^0-9]'), '');
     if (digitsOnly.startsWith('0')) return '62${digitsOnly.substring(1)}';
@@ -77,17 +89,19 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
       return;
     }
 
-    // UPDATE: Menambahkan Status ke pesan WA
+    double piutang = double.tryParse(akad['total_piutang'].toString()) ?? 0;
+    double angsuran = double.tryParse(akad['angsuran_bulanan'].toString()) ?? 0;
+
     String pesan = "📄 *AKAD MURABAHAH BARU*\n"
         "🏛 *BMT AL MUKMININ*\n"
         "--------------------------------\n"
         "Assalamu'alaikum, ${akad['nama_nasabah']}\n\n"
         "Berikut detail akad pembiayaan Anda:\n"
         "📦 Barang : *${akad['nama_barang']}*\n"
-        "📊 Status : *${akad['status']}*\n" // <--- Status Ditambahkan
-        "💰 Total Piutang : ${_formatter.format(akad['total_piutang'])}\n"
+        "📊 Status : *${akad['status']}*\n"
+        "💰 Total Piutang : ${_formatter.format(piutang)}\n"
         "🗓 Tenor : ${akad['jangka_waktu']} Bulan\n"
-        "💵 Angsuran : ${_formatter.format(akad['angsuran_bulanan'])} /bulan\n"
+        "💵 Angsuran : ${_formatter.format(angsuran)} /bulan\n"
         "--------------------------------\n"
         "Mohon disimpan sebagai bukti akad.\n"
         "_Terima kasih. Jazakumullah khairan._";
@@ -119,12 +133,15 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
 
   // --- STEP 2: SUKSES SIMPAN (SHEET UPDATE) ---
   void _showSuccessAkadSheet(Map<String, dynamic> akad) {
+    // Parsing untuk tampilan
+    double piutang = double.tryParse(akad['total_piutang'].toString()) ?? 0;
+    double angsuran = double.tryParse(akad['angsuran_bulanan'].toString()) ?? 0;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) {
-        // Tentukan warna status
         Color statusColor =
             akad['status'] == 'Disetujui' ? Colors.green : Colors.orange;
 
@@ -137,7 +154,6 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Header
               Container(
                 width: 60,
                 height: 60,
@@ -152,12 +168,8 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
                       fontWeight: FontWeight.bold,
                       color: Color(0xFF2E7D32))),
               const Divider(height: 30),
-
-              // Detail
               _buildDetailRow("Nasabah", akad['nama_nasabah']),
               _buildDetailRow("Barang", akad['nama_barang']),
-
-              // UPDATE: Menampilkan Status dengan Highlight Warna
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
                 child: Row(
@@ -179,11 +191,8 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
                   ],
                 ),
               ),
-
-              _buildDetailRow(
-                  "Total Piutang", _formatter.format(akad['total_piutang'])),
+              _buildDetailRow("Total Piutang", _formatter.format(piutang)),
               _buildDetailRow("Tenor", "${akad['jangka_waktu']} Bulan"),
-
               const SizedBox(height: 10),
               Container(
                 padding: const EdgeInsets.all(10),
@@ -195,7 +204,7 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
                   children: [
                     const Text("Angsuran/bln:",
                         style: TextStyle(fontWeight: FontWeight.bold)),
-                    Text(_formatter.format(akad['angsuran_bulanan']),
+                    Text(_formatter.format(angsuran),
                         style: TextStyle(
                             fontWeight: FontWeight.bold,
                             color: Colors.orange[800],
@@ -203,16 +212,13 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
                   ],
                 ),
               ),
-
               const SizedBox(height: 30),
-
-              // Tombol
               Row(
                 children: [
                   Expanded(
                     child: OutlinedButton(
                       onPressed: () {
-                        Navigator.pop(context); // Tutup Sheet Sukses
+                        Navigator.pop(context);
                         Navigator.push(
                             context,
                             MaterialPageRoute(
@@ -325,6 +331,12 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
                       bool isApproved = status == 'Disetujui';
                       bool isRejected = status == 'Tidak Disetujui';
 
+                      // Parsing Data untuk UI
+                      int akadId = int.tryParse(item['id'].toString()) ?? 0;
+                      double piutang =
+                          double.tryParse(item['total_piutang'].toString()) ??
+                              0;
+
                       Color statusColor = isApproved
                           ? Colors.green
                           : (isRejected ? Colors.red : Colors.orange);
@@ -369,7 +381,7 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
                                           Text(item['nama_nasabah'] ?? '-',
                                               style: const TextStyle(
                                                   fontWeight: FontWeight.bold)),
-                                          Text(item['nama_barang'],
+                                          Text(item['nama_barang'] ?? '-',
                                               style: const TextStyle(
                                                   fontSize: 12,
                                                   color: Colors.grey)),
@@ -387,7 +399,7 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
                                             activeColor: Colors.green,
                                             onChanged: (val) {
                                               _toggleStatus(
-                                                  item['id'], item['status']);
+                                                  akadId, item['status']);
                                             },
                                           )
                                   ],
@@ -407,9 +419,7 @@ class _TransaksiAkadJualBeliPageState extends State<TransaksiAkadJualBeliPage> {
                                               color: statusColor,
                                               fontWeight: FontWeight.bold,
                                               fontSize: 12)),
-                                      Text(
-                                          _formatter
-                                              .format(item['total_piutang']),
+                                      Text(_formatter.format(piutang),
                                           style: const TextStyle(
                                               fontWeight: FontWeight.bold)),
                                     ],
@@ -444,7 +454,8 @@ class FormInputAkadSheet extends StatefulWidget {
 }
 
 class _FormInputAkadSheetState extends State<FormInputAkadSheet> {
-  final _dbHelper = DbHelper();
+  // UBAH: Gunakan ApiService
+  final ApiService _apiService = ApiService();
   final _formKey = GlobalKey<FormState>();
 
   final _barangController = TextEditingController();
@@ -460,10 +471,11 @@ class _FormInputAkadSheetState extends State<FormInputAkadSheet> {
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  // --- CARI NASABAH (SHEET) ---
+  // --- CARI NASABAH (SHEET - ONLINE) ---
   void _showCariNasabahSheet() async {
-    List<Map<String, dynamic>> allNasabah = await _dbHelper.getAllAnggota();
-    List<Map<String, dynamic>> filteredNasabah = List.from(allNasabah);
+    // UBAH: Ambil data dari API
+    List<dynamic> allNasabah = await _apiService.getAllAnggota();
+    List<dynamic> filteredNasabah = List.from(allNasabah);
 
     if (!mounted) return;
 
@@ -566,6 +578,7 @@ class _FormInputAkadSheetState extends State<FormInputAkadSheet> {
       double harga = double.parse(_hargaController.text.replaceAll('.', ''));
       double margin = double.parse(_marginController.text.replaceAll('.', ''));
 
+      // Data untuk API
       Map<String, dynamic> row = {
         'nasabah_id': _selectedNasabah!['id'],
         'nama_barang': _barangController.text,
@@ -574,17 +587,25 @@ class _FormInputAkadSheetState extends State<FormInputAkadSheet> {
         'total_piutang': harga + margin,
         'jangka_waktu': int.parse(_tenorController.text),
         'angsuran_bulanan': _cicilanPerBulan,
-        'tgl_akad': DateFormat('dd/MM/yyyy').format(DateTime.now()),
+        'tgl_akad': DateFormat('yyyy-MM-dd')
+            .format(DateTime.now()), // Format YYYY-MM-DD untuk SQL
         'status': _statusDipilih
       };
 
-      await _dbHelper.insertMurabahahAkad(row);
+      // UBAH: Kirim ke API
+      bool success = await _apiService.insertAkadJualBeli(row);
 
+      // Data tambahan untuk tampilan (tidak dikirim ke API)
       row['nama_nasabah'] = _selectedNasabah!['nama'];
       row['telepon'] = _selectedNasabah!['telepon'];
 
       if (mounted) {
-        Navigator.pop(context, row); // Return data ke Dashboard
+        if (success) {
+          Navigator.pop(context, row); // Return data ke Dashboard
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text("Gagal menyimpan Akad. Cek koneksi")));
+        }
       }
     }
   }

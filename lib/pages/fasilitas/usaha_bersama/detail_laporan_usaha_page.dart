@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../../../data/db_helper.dart';
+// UBAH: Gunakan ApiService
+import '../../../services/api_service.dart';
 
 class DetailLaporanUsahaPage extends StatefulWidget {
   final Map<String, dynamic> usaha;
@@ -15,11 +16,12 @@ class DetailLaporanUsahaPage extends StatefulWidget {
 }
 
 class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _listInvestor = [];
+  List<dynamic> _listInvestor = [];
   double _totalModalTerkumpul = 0;
   bool _isLoading = true;
 
@@ -30,24 +32,34 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
   }
 
   Future<void> _hitungDistribusi() async {
-    final dataModal = await _dbHelper.getModalByUsahaId(widget.usaha['id']);
-    final dataAnggota = await _dbHelper.getAllAnggota();
+    int usahaId = int.tryParse(widget.usaha['id'].toString()) ?? 0;
 
-    List<Map<String, dynamic>> tempList = [];
+    // 1. Ambil Data Modal (Online)
+    final dataModal = await _apiService.getModalUsaha(usahaId);
+
+    // 2. Ambil Data Anggota (Untuk No Telp)
+    final dataAnggota = await _apiService.getAllAnggota();
+
+    List<dynamic> tempList = [];
     double total = 0;
 
     for (var modal in dataModal) {
-      total += (modal['jumlah_modal'] as num).toDouble();
-      String? noTelp;
-      try {
-        final anggotaFound = dataAnggota.firstWhere(
-          (a) =>
-              a['nama'].toString().toLowerCase() ==
-              modal['nama_pemodal'].toString().toLowerCase(),
-          orElse: () => {},
-        );
-        if (anggotaFound.isNotEmpty) noTelp = anggotaFound['telepon'];
-      } catch (e) {}
+      total += double.tryParse(modal['jumlah_modal'].toString()) ?? 0;
+
+      String? noTelp = modal['telepon']; // Coba ambil dari join query dulu
+
+      // Jika kosong, cari manual di list anggota
+      if (noTelp == null || noTelp.isEmpty) {
+        try {
+          final anggotaFound = dataAnggota.firstWhere(
+            (a) =>
+                a['nama'].toString().toLowerCase() ==
+                modal['nama_pemodal'].toString().toLowerCase(),
+            orElse: () => {},
+          );
+          if (anggotaFound.isNotEmpty) noTelp = anggotaFound['telepon'];
+        } catch (e) {}
+      }
 
       Map<String, dynamic> newItem = Map.from(modal);
       newItem['telepon'] = noTelp;
@@ -63,7 +75,7 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
     }
   }
 
-  // --- FUNGSI HAPUS LAPORAN ---
+  // --- FUNGSI HAPUS LAPORAN (ONLINE) ---
   Future<void> _hapusLaporan() async {
     bool? confirm = await showDialog(
       context: context,
@@ -83,14 +95,26 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
     );
 
     if (confirm == true) {
-      await _dbHelper.deleteLaporanUsaha(widget.laporan['id']);
+      int id = int.tryParse(widget.laporan['id'].toString()) ?? 0;
+
+      // Panggil API Hapus
+      bool success = await _apiService.deleteLaporanUsaha(id);
+
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text("Laporan berhasil dihapus"),
-              backgroundColor: Colors.red),
-        );
-        Navigator.pop(context);
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text("Laporan berhasil dihapus"),
+                backgroundColor: Colors.red),
+          );
+          Navigator.pop(context); // Kembali ke list
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text("Gagal menghapus laporan"),
+                backgroundColor: Colors.red),
+          );
+        }
       }
     }
   }
@@ -104,11 +128,16 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
     }
     String cleanPhone = telepon.replaceAll(RegExp(r'[^0-9]'), '');
     if (cleanPhone.startsWith('0')) cleanPhone = '62${cleanPhone.substring(1)}';
+    if (cleanPhone.startsWith('8')) cleanPhone = '62$cleanPhone';
+
+    // Parsing Nominal Laporan
+    double totalLapor =
+        double.tryParse(widget.laporan['total_lapor'].toString()) ?? 0;
 
     String pesan = "🏛 *BMT AL MUKMININ - BAGI HASIL*\n"
         "Kepada Yth. *$nama*,\n"
         "Laporan bagi hasil usaha *${widget.usaha['nama_usaha']}* pada ${widget.laporan['tgl_lapor']}:\n"
-        "💰 Total Dibagikan: ${_formatter.format(widget.laporan['total_lapor'])}\n"
+        "💰 Total Dibagikan: ${_formatter.format(totalLapor)}\n"
         "📊 Saham Anda: ${(persentase * 100).toStringAsFixed(2)}%\n"
         "💵 *Diterima: ${_formatter.format(nominalDiterima)}*\n"
         "✅ _Masuk ke Tabungan Wadiah._";
@@ -149,7 +178,9 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
 
   @override
   Widget build(BuildContext context) {
-    double danaSiapDibagi = (widget.laporan['total_lapor'] as num).toDouble();
+    // Parsing Nominal Aman
+    double danaSiapDibagi =
+        double.tryParse(widget.laporan['total_lapor'].toString()) ?? 0;
     double totalPemasukan = danaSiapDibagi / 0.95;
     double kontribusiBmt = totalPemasukan * 0.05;
 
@@ -159,7 +190,7 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
         title: const Text("Detail Bagi Hasil"),
         backgroundColor: const Color(0xFF2E7D32),
         foregroundColor: Colors.white,
-        elevation: 0, // Hilangkan shadow agar menyatu dengan header
+        elevation: 0,
         actions: [
           IconButton(
             onPressed: _hapusLaporan,
@@ -254,8 +285,12 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
                             const SizedBox(height: 10),
                         itemBuilder: (context, index) {
                           final investor = _listInvestor[index];
-                          double modalDia =
-                              (investor['jumlah_modal'] as num).toDouble();
+
+                          // Parsing nominal modal investor
+                          double modalDia = double.tryParse(
+                                  investor['jumlah_modal'].toString()) ??
+                              0;
+
                           double persentase = (_totalModalTerkumpul > 0)
                               ? (modalDia / _totalModalTerkumpul)
                               : 0;
@@ -277,7 +312,7 @@ class _DetailLaporanUsahaPageState extends State<DetailLaporanUsahaPage> {
                                               CrossAxisAlignment.start,
                                           children: [
                                             Text(
-                                              investor['nama_pemodal'],
+                                              investor['nama_pemodal'] ?? '-',
                                               style: const TextStyle(
                                                   fontWeight: FontWeight.bold,
                                                   fontSize: 15),

@@ -1,6 +1,7 @@
 import 'dart:convert'; // Untuk encode/decode JSON
 import 'package:flutter/material.dart';
-import '../../../data/db_helper.dart';
+// UBAH: Gunakan ApiService
+import '../../../services/api_service.dart';
 
 class PjPelaksanaPage extends StatefulWidget {
   final Map<String, dynamic> usaha;
@@ -12,10 +13,12 @@ class PjPelaksanaPage extends StatefulWidget {
 }
 
 class _PjPelaksanaPageState extends State<PjPelaksanaPage> {
-  final DbHelper _dbHelper = DbHelper();
-  final _pjController = TextEditingController();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
 
+  final _pjController = TextEditingController();
   List<Map<String, TextEditingController>> _pelaksanaControllers = [];
+
   bool _isEditing = true;
   bool _isLoading = false;
 
@@ -31,11 +34,13 @@ class _PjPelaksanaPageState extends State<PjPelaksanaPage> {
       _pjController.text = widget.usaha['pj_nama'].toString();
     }
 
-    // 2. Muat List Pelaksana
+    // 2. Muat List Pelaksana (Parse JSON dari API)
     bool adaDataPelaksana = false;
     if (widget.usaha['data_pelaksana'] != null &&
-        widget.usaha['data_pelaksana'].toString().isNotEmpty) {
+        widget.usaha['data_pelaksana'].toString().isNotEmpty &&
+        widget.usaha['data_pelaksana'].toString() != '-') {
       try {
+        // Data dari DB biasanya JSON String
         List<dynamic> jsonList = jsonDecode(widget.usaha['data_pelaksana']);
         for (var item in jsonList) {
           _addPelaksana(nama: item['nama'], ket: item['ket']);
@@ -50,7 +55,7 @@ class _PjPelaksanaPageState extends State<PjPelaksanaPage> {
     if (_pelaksanaControllers.isEmpty) {
       _addPelaksana();
     } else {
-      // Jika data sudah ada (PJ atau Pelaksana), masuk Mode Baca
+      // Jika data sudah ada, masuk Mode Baca
       if (adaDataPelaksana || _pjController.text.isNotEmpty) {
         setState(() => _isEditing = false);
       }
@@ -74,7 +79,7 @@ class _PjPelaksanaPageState extends State<PjPelaksanaPage> {
     });
   }
 
-  // --- FUNGSI SIMPAN (DIPERBAIKI DENGAN TRY-CATCH) ---
+  // --- FUNGSI SIMPAN (ONLINE) ---
   void _simpanData() async {
     setState(() => _isLoading = true);
 
@@ -92,37 +97,40 @@ class _PjPelaksanaPageState extends State<PjPelaksanaPage> {
         }
       }
       String jsonString = jsonEncode(dataPelaksana);
+      int usahaId = int.tryParse(widget.usaha['id'].toString()) ?? 0;
 
-      // 3. Update Database (Pastikan fungsi ini ada di DbHelper!)
-      await _dbHelper.updatePjPelaksana(widget.usaha['id'], pjNama, jsonString);
+      // 3. Update Database via API
+      bool success =
+          await _apiService.updatePjPelaksanaUsaha(usahaId, pjNama, jsonString);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Data Pengurus Berhasil Disimpan!'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        setState(() {
-          _isEditing = false; // Kembali ke Mode Baca
-        });
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Data Pengurus Berhasil Disimpan ke Server!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+          setState(() {
+            _isEditing = false; // Kembali ke Mode Baca
+          });
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Gagal menyimpan data'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       }
     } catch (e) {
-      // Tangkap Error jika update gagal
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Gagal menyimpan: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 4),
-          ),
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
-      // Pastikan Loading berhenti apapun yang terjadi
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -154,8 +162,7 @@ class _PjPelaksanaPageState extends State<PjPelaksanaPage> {
         ],
       ),
       body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator()) // Tampilkan loading spinner
+          ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
               padding: const EdgeInsets.all(16),
               child: Column(

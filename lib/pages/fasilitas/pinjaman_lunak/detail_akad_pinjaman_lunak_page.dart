@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../../../data/db_helper.dart';
+// UBAH: Gunakan ApiService
+import '../../../services/api_service.dart';
 
 class DetailAkadPinjamanLunakPage extends StatefulWidget {
   final Map<String, dynamic> dataPinjaman;
@@ -15,16 +16,17 @@ class DetailAkadPinjamanLunakPage extends StatefulWidget {
 
 class _DetailAkadPinjamanLunakPageState
     extends State<DetailAkadPinjamanLunakPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
   late String _currentStatus;
 
   @override
   void initState() {
     super.initState();
-    _currentStatus = widget.dataPinjaman['status'];
+    _currentStatus = widget.dataPinjaman['status'] ?? 'Pengajuan';
   }
 
-  // --- FUNGSI HAPUS AKAD (BARU) ---
+  // --- FUNGSI HAPUS AKAD (ONLINE) ---
   Future<void> _hapusAkad() async {
     // 1. Tampilkan Dialog Konfirmasi
     bool confirm = await showDialog(
@@ -32,7 +34,7 @@ class _DetailAkadPinjamanLunakPageState
           builder: (context) => AlertDialog(
             title: const Text("Hapus Akad"),
             content: const Text(
-                "Yakin ingin menghapus data akad ini secara permanen? Data yang dihapus tidak dapat dikembalikan."),
+                "Yakin ingin menghapus data akad ini dari SERVER? Data yang dihapus tidak dapat dikembalikan."),
             actions: [
               TextButton(
                   onPressed: () => Navigator.pop(context, false),
@@ -50,33 +52,55 @@ class _DetailAkadPinjamanLunakPageState
 
     // 2. Eksekusi Hapus jika User klik Ya
     if (confirm) {
-      final db = await _dbHelper.database;
-      // Pastikan nama tabel sesuai dengan database Anda (biasanya 'pinjaman_lunak')
-      await db.delete('pinjaman_lunak',
-          where: 'id = ?', whereArgs: [widget.dataPinjaman['id']]);
+      int id = int.tryParse(widget.dataPinjaman['id'].toString()) ?? 0;
+
+      // Panggil API Hapus
+      bool success = await _apiService.deletePinjamanLunak(id);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Data akad berhasil dihapus")),
-        );
-        Navigator.pop(context); // Kembali ke halaman list
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text("Data akad berhasil dihapus dari Server")),
+          );
+          Navigator.pop(context); // Kembali ke halaman list
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text("Gagal menghapus data"),
+                backgroundColor: Colors.red),
+          );
+        }
       }
     }
   }
 
-  // --- FUNGSI UPDATE STATUS ---
+  // --- FUNGSI UPDATE STATUS (ONLINE) ---
   Future<void> _updateStatus(String newStatus) async {
-    await _dbHelper.updateStatusPinjaman(widget.dataPinjaman['id'], newStatus);
-    setState(() {
-      _currentStatus = newStatus;
-    });
+    int id = int.tryParse(widget.dataPinjaman['id'].toString()) ?? 0;
+
+    // Panggil API Update Status
+    bool success = await _apiService.updateStatusPinjaman(id, newStatus);
+
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Status berhasil diubah menjadi: $newStatus"),
-          backgroundColor: _getColorByStatus(newStatus),
-        ),
-      );
+      if (success) {
+        setState(() {
+          _currentStatus = newStatus;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Status berhasil diubah menjadi: $newStatus"),
+            backgroundColor: _getColorByStatus(newStatus),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text("Gagal update status"),
+              backgroundColor: Colors.red),
+        );
+      }
     }
   }
 
@@ -85,9 +109,11 @@ class _DetailAkadPinjamanLunakPageState
     String urlString;
 
     if (phone != null && phone.isNotEmpty) {
-      String formattedPhone = phone;
+      String formattedPhone = phone.replaceAll(RegExp(r'[^0-9]'), '');
       if (formattedPhone.startsWith('0')) {
         formattedPhone = "62${formattedPhone.substring(1)}";
+      } else if (formattedPhone.startsWith('8')) {
+        formattedPhone = "62$formattedPhone";
       }
       urlString =
           "https://wa.me/$formattedPhone?text=${Uri.encodeComponent(message)}";
@@ -138,6 +164,10 @@ class _DetailAkadPinjamanLunakPageState
   Widget build(BuildContext context) {
     final currencyFormatter =
         NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
+
+    // Parsing Nominal Aman
+    double nominal =
+        double.tryParse(widget.dataPinjaman['nominal'].toString()) ?? 0;
 
     return Scaffold(
       appBar: AppBar(
@@ -202,14 +232,12 @@ class _DetailAkadPinjamanLunakPageState
                         "Telepon/WA", widget.dataPinjaman['telepon'] ?? '-'),
                     const Divider(),
                     _buildRow("Tanggal Pengajuan",
-                        widget.dataPinjaman['tgl_pengajuan']),
+                        widget.dataPinjaman['tgl_pengajuan'] ?? '-'),
+                    const Divider(),
+                    _buildRow("Nominal", currencyFormatter.format(nominal)),
                     const Divider(),
                     _buildRow(
-                        "Nominal",
-                        currencyFormatter
-                            .format(widget.dataPinjaman['nominal'])),
-                    const Divider(),
-                    _buildRow("Keperluan", widget.dataPinjaman['deskripsi']),
+                        "Keperluan", widget.dataPinjaman['deskripsi'] ?? '-'),
                   ],
                 ),
               ),
@@ -239,7 +267,7 @@ class _DetailAkadPinjamanLunakPageState
                       String msg = "*PENGAJUAN PINJAMAN LUNAK*\n\n"
                           "Mohon tinjauannya Pak/Bu untuk pengajuan berikut:\n"
                           "Nama: ${widget.dataPinjaman['nama_nasabah']}\n"
-                          "Nominal: ${currencyFormatter.format(widget.dataPinjaman['nominal'])}\n"
+                          "Nominal: ${currencyFormatter.format(nominal)}\n"
                           "Keperluan: ${widget.dataPinjaman['deskripsi']}\n\n"
                           "Terima Kasih.";
                       _launchWhatsApp(phone: null, message: msg);
@@ -257,7 +285,8 @@ class _DetailAkadPinjamanLunakPageState
                     label: const Text("Info ke Nasabah",
                         style: TextStyle(color: Colors.white, fontSize: 12)),
                     onPressed: () {
-                      String phone = widget.dataPinjaman['telepon'] ?? '';
+                      String phone =
+                          widget.dataPinjaman['telepon']?.toString() ?? '';
                       if (phone.isEmpty) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(

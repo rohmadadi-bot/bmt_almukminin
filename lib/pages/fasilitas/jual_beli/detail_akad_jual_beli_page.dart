@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../../../data/db_helper.dart';
+// UBAH: Gunakan ApiService
+import '../../../services/api_service.dart';
 
 class DetailAkadJualBeliPage extends StatefulWidget {
   final Map<String, dynamic> dataAkad;
@@ -13,7 +14,9 @@ class DetailAkadJualBeliPage extends StatefulWidget {
 }
 
 class _DetailAkadJualBeliPageState extends State<DetailAkadJualBeliPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
+
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
@@ -25,7 +28,7 @@ class _DetailAkadJualBeliPageState extends State<DetailAkadJualBeliPage> {
     _currentStatus = widget.dataAkad['status'] ?? 'Pengajuan';
   }
 
-  // --- LOGIKA HAPUS DATA (BARU) ---
+  // --- LOGIKA HAPUS DATA (ONLINE) ---
   Future<void> _hapusAkad() async {
     // 1. Tampilkan Dialog Konfirmasi
     bool confirm = await showDialog(
@@ -33,7 +36,7 @@ class _DetailAkadJualBeliPageState extends State<DetailAkadJualBeliPage> {
           builder: (context) => AlertDialog(
             title: const Text("Hapus Akad"),
             content: const Text(
-                "Yakin ingin menghapus data akad ini secara permanen? Data yang dihapus tidak dapat dikembalikan."),
+                "Yakin ingin menghapus data akad ini dari SERVER? Data yang dihapus tidak dapat dikembalikan."),
             actions: [
               TextButton(
                   onPressed: () => Navigator.pop(context, false),
@@ -49,38 +52,56 @@ class _DetailAkadJualBeliPageState extends State<DetailAkadJualBeliPage> {
         ) ??
         false;
 
-    // 2. Eksekusi Hapus jika User klik Ya
+    // 2. Eksekusi Hapus via API
     if (confirm) {
-      final db = await _dbHelper.database;
-      await db.delete('murabahah_akad',
-          where: 'id = ?', whereArgs: [widget.dataAkad['id']]);
+      // Parsing ID aman
+      int id = int.tryParse(widget.dataAkad['id'].toString()) ?? 0;
+
+      bool success = await _apiService.deleteAkadJualBeli(id);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Data akad berhasil dihapus")),
-        );
-        Navigator.pop(context); // Kembali ke halaman list
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text("Data akad berhasil dihapus dari Server")),
+          );
+          Navigator.pop(context); // Kembali ke halaman list
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text("Gagal menghapus data"),
+                backgroundColor: Colors.red),
+          );
+        }
       }
     }
   }
 
-  // --- LOGIKA UPDATE STATUS ---
+  // --- LOGIKA UPDATE STATUS (ONLINE) ---
   Future<void> _updateStatus(String newStatus) async {
-    final db = await _dbHelper.database;
-    await db.rawUpdate('UPDATE murabahah_akad SET status = ? WHERE id = ?',
-        [newStatus, widget.dataAkad['id']]);
+    int id = int.tryParse(widget.dataAkad['id'].toString()) ?? 0;
 
-    setState(() {
-      _currentStatus = newStatus;
-    });
+    // Panggil API Update Status
+    bool success = await _apiService.updateStatusAkad(id, newStatus);
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Status berubah menjadi: $newStatus"),
-          backgroundColor: _getStatusColor(),
-        ),
-      );
+      if (success) {
+        setState(() {
+          _currentStatus = newStatus;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Status berubah menjadi: $newStatus"),
+            backgroundColor: _getStatusColor(),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text("Gagal update status"),
+              backgroundColor: Colors.red),
+        );
+      }
     }
   }
 
@@ -137,6 +158,15 @@ class _DetailAkadJualBeliPageState extends State<DetailAkadJualBeliPage> {
 
   @override
   Widget build(BuildContext context) {
+    // Parsing Data untuk Tampilan Aman
+    double hargaBeli =
+        double.tryParse(widget.dataAkad['harga_beli'].toString()) ?? 0;
+    double margin = double.tryParse(widget.dataAkad['margin'].toString()) ?? 0;
+    double totalPiutang =
+        double.tryParse(widget.dataAkad['total_piutang'].toString()) ?? 0;
+    double angsuran =
+        double.tryParse(widget.dataAkad['angsuran_bulanan'].toString()) ?? 0;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text("Detail Akad Jual Beli"),
@@ -191,21 +221,18 @@ class _DetailAkadJualBeliPageState extends State<DetailAkadJualBeliPage> {
                     _rowDetail(
                         "Nasabah", widget.dataAkad['nama_nasabah'] ?? '-'),
                     const Divider(),
-                    _rowDetail("Barang", widget.dataAkad['nama_barang']),
+                    _rowDetail("Barang", widget.dataAkad['nama_barang'] ?? '-'),
                     const Divider(),
-                    _rowDetail("Harga Pokok",
-                        _formatter.format(widget.dataAkad['harga_beli'])),
-                    _rowDetail(
-                        "Margin", _formatter.format(widget.dataAkad['margin'])),
+                    _rowDetail("Harga Pokok", _formatter.format(hargaBeli)),
+                    _rowDetail("Margin", _formatter.format(margin)),
                     const Divider(),
-                    _rowDetail("Total Piutang",
-                        _formatter.format(widget.dataAkad['total_piutang']),
+                    _rowDetail("Total Piutang", _formatter.format(totalPiutang),
                         isBold: true),
                     const Divider(),
                     _rowDetail(
                         "Tenor", "${widget.dataAkad['jangka_waktu']} Bulan"),
-                    _rowDetail("Angsuran",
-                        "${_formatter.format(widget.dataAkad['angsuran_bulanan'])}/bln"),
+                    _rowDetail(
+                        "Angsuran", "${_formatter.format(angsuran)}/bln"),
                   ],
                 ),
               ),
@@ -233,7 +260,7 @@ class _DetailAkadJualBeliPageState extends State<DetailAkadJualBeliPage> {
                           "Mohon tinjauan Bapak/Ibu Pimpinan untuk pengajuan berikut:\n\n"
                           "Nama: ${widget.dataAkad['nama_nasabah']}\n"
                           "Barang: ${widget.dataAkad['nama_barang']}\n"
-                          "Total: ${_formatter.format(widget.dataAkad['total_piutang'])}\n"
+                          "Total: ${_formatter.format(totalPiutang)}\n"
                           "Tenor: ${widget.dataAkad['jangka_waktu']} Bulan\n\n"
                           "Terima Kasih.";
                       _launchWA(phone: "", message: msg);

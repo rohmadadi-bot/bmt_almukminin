@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../../../data/db_helper.dart';
+// UBAH: Pastikan import ini benar ke file api_service.dart
+import '../../../services/api_service.dart';
 
 class PermodalanPage extends StatefulWidget {
   final Map<String, dynamic> usaha;
@@ -13,12 +14,12 @@ class PermodalanPage extends StatefulWidget {
 }
 
 class _PermodalanPageState extends State<PermodalanPage> {
-  final DbHelper _dbHelper = DbHelper();
+  final ApiService _apiService = ApiService();
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _listModal = [];
-  List<Map<String, dynamic>> _listAnggota = [];
+  List<dynamic> _listModal = [];
+  List<dynamic> _listAnggota = [];
   double _totalTerkumpul = 0;
   bool _isLoading = true;
 
@@ -34,17 +35,21 @@ class _PermodalanPageState extends State<PermodalanPage> {
   }
 
   Future<void> _loadDataAnggota() async {
-    final data = await _dbHelper.getAllAnggota();
-    setState(() {
-      _listAnggota = data;
-    });
+    final data = await _apiService.getAllAnggota();
+    if (mounted) {
+      setState(() {
+        _listAnggota = data;
+      });
+    }
   }
 
   Future<void> _loadDataModal() async {
-    final data = await _dbHelper.getModalByUsahaId(widget.usaha['id']);
+    int usahaId = int.tryParse(widget.usaha['id'].toString()) ?? 0;
+    final data = await _apiService.getModalUsaha(usahaId);
+
     double total = 0;
     for (var item in data) {
-      total += (item['jumlah_modal'] as num).toDouble();
+      total += double.tryParse(item['jumlah_modal'].toString()) ?? 0;
     }
 
     if (mounted) {
@@ -60,12 +65,15 @@ class _PermodalanPageState extends State<PermodalanPage> {
   Future<void> _kirimWA(Map<String, dynamic> modalData) async {
     String rawPhone = modalData['telepon']?.toString() ?? "";
 
-    // Cari manual jika data telepon tidak ada di map modalData (misal baru input)
     if (rawPhone.isEmpty) {
-      final anggota = _listAnggota.firstWhere(
-          (element) => element['nama'] == modalData['nama_pemodal'],
-          orElse: () => {});
-      rawPhone = anggota['telepon']?.toString() ?? "";
+      try {
+        final anggota = _listAnggota.firstWhere(
+            (element) => element['nama'] == modalData['nama_pemodal'],
+            orElse: () => {});
+        rawPhone = anggota['telepon']?.toString() ?? "";
+      } catch (e) {
+        // Ignore error
+      }
     }
 
     if (rawPhone.isEmpty) {
@@ -80,13 +88,15 @@ class _PermodalanPageState extends State<PermodalanPage> {
     if (phone.startsWith('0')) phone = '62${phone.substring(1)}';
     if (phone.startsWith('8')) phone = '62$phone';
 
+    double jumlah = double.tryParse(modalData['jumlah_modal'].toString()) ?? 0;
+
     String pesan = "💰 *BUKTI SETORAN MODAL*\n"
         "🏛 *USAHA: ${widget.usaha['nama_usaha']}*\n"
         "--------------------------------\n"
         "Investor: ${modalData['nama_pemodal']}\n"
         "Tanggal : ${modalData['tgl_setor']}\n"
         "--------------------------------\n"
-        "Jumlah  : *${_formatter.format(modalData['jumlah_modal'])}*\n"
+        "Jumlah  : *${_formatter.format(jumlah)}*\n"
         "--------------------------------\n"
         "_Terima kasih telah berinvestasi._";
 
@@ -127,19 +137,26 @@ class _PermodalanPageState extends State<PermodalanPage> {
         false;
 
     if (confirm) {
-      await _dbHelper.deleteModalUsaha(id);
+      bool success = await _apiService.deleteModalUsaha(id);
+
       if (mounted) {
-        Navigator.pop(context); // Tutup Bottom Sheet Detail
-        _loadDataModal(); // Refresh List
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Data modal berhasil dihapus")));
+        if (success) {
+          Navigator.pop(context); // Tutup Sheet Detail
+          _loadDataModal(); // Refresh List
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text("Data modal berhasil dihapus")));
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text("Gagal menghapus data"),
+              backgroundColor: Colors.red));
+        }
       }
     }
   }
 
   // --- 1. SEARCH NASABAH (BOTTOM SHEET) ---
   Future<Map<String, dynamic>?> _showSearchAnggotaSheet() {
-    List<Map<String, dynamic>> filteredAnggota = List.from(_listAnggota);
+    List<dynamic> filteredAnggota = List.from(_listAnggota);
 
     return showModalBottomSheet<Map<String, dynamic>>(
       context: context,
@@ -217,17 +234,20 @@ class _PermodalanPageState extends State<PermodalanPage> {
                                   return ListTile(
                                     leading: CircleAvatar(
                                       backgroundColor: Colors.green[50],
-                                      child: Text(item['nama'][0].toUpperCase(),
+                                      child: Text(
+                                          (item['nama'] ?? '?')[0]
+                                              .toUpperCase(),
                                           style: TextStyle(
                                               color: Colors.green[800],
                                               fontWeight: FontWeight.bold)),
                                     ),
-                                    title: Text(item['nama'],
+                                    title: Text(item['nama'] ?? '-',
                                         style: const TextStyle(
                                             fontWeight: FontWeight.bold)),
                                     subtitle:
                                         Text("NIK: ${item['nik'] ?? '-'}"),
-                                    onTap: () => Navigator.pop(context, item),
+                                    onTap: () => Navigator.pop(context,
+                                        Map<String, dynamic>.from(item)),
                                   );
                                 },
                               ),
@@ -245,6 +265,9 @@ class _PermodalanPageState extends State<PermodalanPage> {
 
   // --- 2. DETAIL MODAL (BOTTOM SHEET) ---
   void _showDetailModalSheet(Map<String, dynamic> item, double persentase) {
+    int id = int.tryParse(item['id'].toString()) ?? 0;
+    double jumlah = double.tryParse(item['jumlah_modal'].toString()) ?? 0;
+
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -275,10 +298,9 @@ class _PermodalanPageState extends State<PermodalanPage> {
               const Text("Detail Setoran Modal",
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
               const Divider(height: 30),
-              _detailRow("Nama Investor", item['nama_pemodal']),
-              _detailRow("Tanggal Setor", item['tgl_setor']),
-              _detailRow(
-                  "Jumlah Modal", _formatter.format(item['jumlah_modal']),
+              _detailRow("Nama Investor", item['nama_pemodal'] ?? '-'),
+              _detailRow("Tanggal Setor", item['tgl_setor'] ?? '-'),
+              _detailRow("Jumlah Modal", _formatter.format(jumlah),
                   isBold: true, color: const Color(0xFF2E7D32)),
               _detailRow("Kepemilikan",
                   "${(persentase * 100).toStringAsFixed(1)}% Saham (Estimasi)"),
@@ -287,7 +309,7 @@ class _PermodalanPageState extends State<PermodalanPage> {
                 children: [
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: () => _hapusModal(item['id']),
+                      onPressed: () => _hapusModal(id),
                       icon: const Icon(Icons.delete, color: Colors.red),
                       label: const Text("Hapus",
                           style: TextStyle(color: Colors.red)),
@@ -339,7 +361,7 @@ class _PermodalanPageState extends State<PermodalanPage> {
     );
   }
 
-  // --- 3. TAMBAH MODAL (BOTTOM SHEET & LOGIC BUKA DETAIL) ---
+  // --- 3. TAMBAH MODAL (BOTTOM SHEET) ---
   void _showTambahModalSheet() {
     final namaController = TextEditingController();
     final jumlahController = TextEditingController();
@@ -504,43 +526,53 @@ class _PermodalanPageState extends State<PermodalanPage> {
 
                                 String tgl = DateFormat('dd/MM/yyyy')
                                     .format(DateTime.now());
+                                int usahaId = int.tryParse(
+                                        widget.usaha['id'].toString()) ??
+                                    0;
 
-                                // 1. Simpan ke DB dan Ambil ID
-                                int id = await _dbHelper.insertModalUsaha({
-                                  'usaha_id': widget.usaha['id'],
+                                // PANGGIL API INSERT
+                                int id = await _apiService.insertModalUsaha({
+                                  'usaha_id': usahaId,
                                   'nama_pemodal': namaController.text,
                                   'jumlah_modal': jumlah,
                                   'tgl_setor': tgl,
                                 });
 
                                 if (mounted) {
-                                  Navigator.pop(context); // Tutup Input Sheet
-                                  await _loadDataModal(); // Refresh Total
+                                  if (id > 0) {
+                                    Navigator.pop(context); // Tutup Input Sheet
+                                    await _loadDataModal(); // Refresh Total
 
-                                  // 2. Siapkan data untuk Detail Sheet
-                                  // Cari no telp dari list anggota
-                                  String telepon = "";
-                                  try {
-                                    var nasabah = _listAnggota.firstWhere((e) =>
-                                        e['nama'] == namaController.text);
-                                    telepon = nasabah['telepon'] ?? "";
-                                  } catch (e) {}
+                                    // Siapkan data untuk Detail Sheet
+                                    String telepon = "";
+                                    try {
+                                      var nasabah = _listAnggota.firstWhere(
+                                          (e) =>
+                                              e['nama'] == namaController.text);
+                                      telepon = nasabah['telepon'] ?? "";
+                                    } catch (e) {}
 
-                                  Map<String, dynamic> newItem = {
-                                    'id': id,
-                                    'nama_pemodal': namaController.text,
-                                    'jumlah_modal': jumlah,
-                                    'tgl_setor': tgl,
-                                    'telepon': telepon
-                                  };
+                                    Map<String, dynamic> newItem = {
+                                      'id': id,
+                                      'nama_pemodal': namaController.text,
+                                      'jumlah_modal': jumlah,
+                                      'tgl_setor': tgl,
+                                      'telepon': telepon
+                                    };
 
-                                  // Hitung persentase baru
-                                  double persentase = _totalTerkumpul > 0
-                                      ? (jumlah / _totalTerkumpul)
-                                      : 0.0;
+                                    // Hitung persentase baru
+                                    double persentase = _totalTerkumpul > 0
+                                        ? (jumlah / _totalTerkumpul)
+                                        : 0.0;
 
-                                  // 3. Tampilkan Detail Sheet
-                                  _showDetailModalSheet(newItem, persentase);
+                                    // Tampilkan Detail Sheet
+                                    _showDetailModalSheet(newItem, persentase);
+                                  } else {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                            content: Text("Gagal Simpan Data"),
+                                            backgroundColor: Colors.red));
+                                  }
                                 }
                               }
                             },
@@ -565,6 +597,9 @@ class _PermodalanPageState extends State<PermodalanPage> {
 
   @override
   Widget build(BuildContext context) {
+    double modalAwal =
+        double.tryParse(widget.usaha['modal_awal'].toString()) ?? 0;
+
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
@@ -608,7 +643,7 @@ class _PermodalanPageState extends State<PermodalanPage> {
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
-                    "Target Awal: ${_formatter.format(widget.usaha['modal_awal'])}",
+                    "Target Awal: ${_formatter.format(modalAwal)}",
                     style: const TextStyle(color: Colors.white, fontSize: 12),
                   ),
                 ),
@@ -638,15 +673,20 @@ class _PermodalanPageState extends State<PermodalanPage> {
                             const SizedBox(height: 10),
                         itemBuilder: (context, index) {
                           final item = _listModal[index];
-                          double modalIni =
-                              (item['jumlah_modal'] as num).toDouble();
+                          // Parsing Map
+                          Map<String, dynamic> itemMap =
+                              Map<String, dynamic>.from(item);
+                          double modalIni = double.tryParse(
+                                  item['jumlah_modal'].toString()) ??
+                              0;
+
                           double persentase = _totalTerkumpul > 0
                               ? (modalIni / _totalTerkumpul)
                               : 0.0;
 
                           return InkWell(
                             onTap: () =>
-                                _showDetailModalSheet(item, persentase),
+                                _showDetailModalSheet(itemMap, persentase),
                             borderRadius: BorderRadius.circular(12),
                             child: Card(
                               elevation: 2,
@@ -659,7 +699,8 @@ class _PermodalanPageState extends State<PermodalanPage> {
                                     CircleAvatar(
                                       backgroundColor: Colors.orange[100],
                                       child: Text(
-                                        item['nama_pemodal'][0].toUpperCase(),
+                                        (item['nama_pemodal'] ?? '?')[0]
+                                            .toUpperCase(),
                                         style: TextStyle(
                                             color: Colors.orange[800],
                                             fontWeight: FontWeight.bold),
@@ -672,7 +713,7 @@ class _PermodalanPageState extends State<PermodalanPage> {
                                             CrossAxisAlignment.start,
                                         children: [
                                           Text(
-                                            item['nama_pemodal'],
+                                            item['nama_pemodal'] ?? '-',
                                             style: const TextStyle(
                                                 fontWeight: FontWeight.bold,
                                                 fontSize: 16),

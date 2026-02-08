@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import '../../data/db_helper.dart';
+// Ganti import DbHelper dengan ApiService
+import '../../services/api_service.dart';
 import 'home_page.dart';
 
 class LoginPage extends StatefulWidget {
@@ -16,8 +17,8 @@ class _LoginPageState extends State<LoginPage> {
   bool _isPasswordVisible = false;
   bool _isLoading = false;
 
-  // Inisialisasi DbHelper
-  final DbHelper _dbHelper = DbHelper();
+  // REVISI: Gunakan ApiService, bukan DbHelper
+  final ApiService _apiService = ApiService();
 
   void _handleLogin() async {
     String username = _usernameController.text.trim();
@@ -35,29 +36,35 @@ class _LoginPageState extends State<LoginPage> {
     });
 
     try {
-      // Memanggil fungsi cekLogin dari DbHelper
-      final admin = await _dbHelper.cekLogin(username, password);
+      // REVISI: Panggil fungsi login dari ApiService (Konek ke Server)
+      final response = await _apiService.login(username, password);
 
-      if (admin != null) {
-        // Jika login berhasil, pindah ke Home Page
-        if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (context) => const HomePage()),
-          );
-        }
+      // Pastikan widget masih ada sebelum update UI (mencegah error 'called on null')
+      if (!mounted) return;
+
+      // Cek status dari JSON Server
+      if (response['status'] == true) {
+        // SUKSES: Login Berhasil -> Pindah ke Home Page
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const HomePage()),
+        );
       } else {
-        // Jika data tidak ditemukan di database
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Username atau Password salah!')),
-          );
-        }
+        // GAGAL: Password salah atau User tidak ditemukan
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(response['message'] ?? 'Login Gagal'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Terjadi kesalahan sistem: $e')),
+          SnackBar(
+            content: Text('Gagal terhubung ke server. Cek internet Anda.'),
+            backgroundColor: Colors.orange,
+          ),
         );
       }
     } finally {
@@ -79,7 +86,7 @@ class _LoginPageState extends State<LoginPage> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               const Icon(
-                Icons.account_balance_wallet,
+                Icons.cloud_done, // Ganti Icon biar terasa bedanya (Opsional)
                 size: 100,
                 color: Color(0xFF2E7D32),
               ),
@@ -92,7 +99,10 @@ class _LoginPageState extends State<LoginPage> {
                   color: Color(0xFF2E7D32),
                 ),
               ),
-              const Text('Admin System Login'),
+              const Text(
+                'Online System Login', // Update Text
+                style: TextStyle(color: Colors.grey),
+              ),
               const SizedBox(height: 48),
               TextField(
                 controller: _usernameController,
@@ -138,7 +148,21 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                   ),
                   child: _isLoading
-                      ? const CircularProgressIndicator(color: Colors.white)
+                      ? const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            ),
+                            SizedBox(width: 10),
+                            Text("Menghubungkan...")
+                          ],
+                        )
                       : const Text('MASUK', style: TextStyle(fontSize: 16)),
                 ),
               ),

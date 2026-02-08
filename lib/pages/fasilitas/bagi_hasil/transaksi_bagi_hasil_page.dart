@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:url_launcher/url_launcher.dart'; // Pastikan sudah di add di pubspec.yaml
-import '../../../data/db_helper.dart';
-import 'detail_bagi_hasil_page.dart';
+import 'package:url_launcher/url_launcher.dart';
+// UBAH: Pastikan import ini mengarah ke file api_service.dart Anda
+import '../../../services/api_service.dart';
 
 class TransaksiBagiHasilPage extends StatefulWidget {
   final Map<String, dynamic> akadData;
@@ -14,11 +14,12 @@ class TransaksiBagiHasilPage extends StatefulWidget {
 }
 
 class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
-  final DbHelper _dbHelper = DbHelper();
+  final ApiService _apiService = ApiService();
   final NumberFormat _currencyFormatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _riwayatTransaksi = [];
+  List<dynamic> _riwayatTransaksi = [];
+  bool _isLoading = true;
 
   // Variabel Header Summary
   double _totalOmsetAll = 0;
@@ -28,11 +29,20 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
   @override
   void initState() {
     super.initState();
-    _loadData();
+    _loadData(isRefresh: false);
   }
 
-  Future<void> _loadData() async {
-    final data = await _dbHelper.getTransaksiByAkadId(widget.akadData['id']);
+  // --- 1. LOAD DATA ---
+  // Ditambahkan parameter isRefresh agar saat tarik ke bawah loading tidak menutupi layar
+  Future<void> _loadData({bool isRefresh = true}) async {
+    if (!isRefresh) {
+      setState(() => _isLoading = true);
+    }
+
+    // Parsing Akad ID dengan aman
+    int akadId = int.tryParse(widget.akadData['id'].toString()) ?? 0;
+
+    final data = await _apiService.getRiwayatBagiHasil(akadId);
 
     // Hitung Total untuk Header
     double tOmset = 0;
@@ -40,9 +50,9 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
     double tBmt = 0;
 
     for (var item in data) {
-      tOmset += (item['total_keuntungan'] as num).toDouble();
-      tNasabah += (item['bagian_nasabah'] as num).toDouble();
-      tBmt += (item['bagian_bmt'] as num).toDouble();
+      tOmset += double.tryParse(item['total_keuntungan'].toString()) ?? 0;
+      tNasabah += double.tryParse(item['bagian_nasabah'].toString()) ?? 0;
+      tBmt += double.tryParse(item['bagian_bmt'].toString()) ?? 0;
     }
 
     if (mounted) {
@@ -51,21 +61,60 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
         _totalOmsetAll = tOmset;
         _totalNasabahAll = tNasabah;
         _totalBmtAll = tBmt;
+        _isLoading = false;
       });
     }
   }
 
-  // --- LOGIKA KIRIM WA ---
-  void _kirimWA(Map<String, dynamic> transaksi) async {
-    // Ambil No HP Nasabah dari Database berdasarkan ID Nasabah di Akad
-    final db = await _dbHelper.database;
-    final List<Map<String, dynamic>> res = await db.rawQuery(
-        'SELECT telepon FROM anggota WHERE id = ?',
-        [widget.akadData['nasabah_id']]);
+  // --- 2. FITUR DELETE ---
+  void _hapusTransaksi(int id) async {
+    bool confirm = await showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text("Hapus Transaksi"),
+            content: const Text(
+                "Yakin ingin menghapus data bagi hasil ini dari SERVER? Data tidak dapat dikembalikan."),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text("Batal")),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () => Navigator.pop(context, true),
+                child:
+                    const Text("Hapus", style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        ) ??
+        false;
 
-    String rawPhone = "";
-    if (res.isNotEmpty) {
-      rawPhone = res.first['telepon']?.toString() ?? "";
+    if (confirm) {
+      // Panggil API Delete
+      bool success = await _apiService.deleteTransaksiBagiHasil(id);
+
+      if (mounted) {
+        if (success) {
+          _loadData(isRefresh: true); // Refresh List langsung
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text("Transaksi berhasil dihapus dari Server")));
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text("Gagal menghapus data"),
+              backgroundColor: Colors.red));
+        }
+      }
+    }
+  }
+
+  // --- 3. FITUR WA ---
+  void _kirimWA(Map<String, dynamic> transaksi) async {
+    String rawPhone = widget.akadData['telepon']?.toString() ?? "";
+
+    // Cek jika di data transaksi ada no telp (dari join table)
+    if (transaksi['telepon'] != null &&
+        transaksi['telepon'].toString().isNotEmpty) {
+      rawPhone = transaksi['telepon'].toString();
     }
 
     if (rawPhone.isEmpty) {
@@ -76,7 +125,6 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
       return;
     }
 
-    // Format Nomor HP
     String phone = rawPhone.replaceAll(RegExp(r'[^0-9]'), '');
     if (phone.startsWith('0')) {
       phone = '62${phone.substring(1)}';
@@ -84,17 +132,22 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
       phone = '62$phone';
     }
 
-    // Template Pesan
+    double total =
+        double.tryParse(transaksi['total_keuntungan'].toString()) ?? 0;
+    double nasabah =
+        double.tryParse(transaksi['bagian_nasabah'].toString()) ?? 0;
+    double bmt = double.tryParse(transaksi['bagian_bmt'].toString()) ?? 0;
+
     String pesan = "📊 *LAPORAN BAGI HASIL BULANAN*\n"
         "🏛 *BMT AL MUKMININ*\n"
         "--------------------------------\n"
         "Usaha : *${widget.akadData['nama_usaha']}*\n"
         "Tanggal : ${transaksi['tgl_transaksi']}\n"
         "--------------------------------\n"
-        "💰 Total Keuntungan : ${_currencyFormatter.format(transaksi['total_keuntungan'])}\n\n"
+        "💰 Total Keuntungan : ${_currencyFormatter.format(total)}\n\n"
         "Pembagian:\n"
-        "👤 Pengelola : ${_currencyFormatter.format(transaksi['bagian_nasabah'])}\n"
-        "🏦 BMT : ${_currencyFormatter.format(transaksi['bagian_bmt'])}\n"
+        "👤 Pengelola : ${_currencyFormatter.format(nasabah)}\n"
+        "🏦 BMT : ${_currencyFormatter.format(bmt)}\n"
         "--------------------------------\n"
         "_Terima kasih atas kerjasamanya._";
 
@@ -111,14 +164,111 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
     }
   }
 
-  // --- INPUT KEUNTUNGAN (BOTTOM SHEET) ---
+  // --- 4. SHOW DETAIL & DELETE (BOTTOM SHEET) ---
+  void _showDetailBottomSheet(Map<String, dynamic> item) {
+    int idTransaksi = int.tryParse(item['id'].toString()) ?? 0;
+    double total = double.tryParse(item['total_keuntungan'].toString()) ?? 0;
+    double nasabah = double.tryParse(item['bagian_nasabah'].toString()) ?? 0;
+    double bmt = double.tryParse(item['bagian_bmt'].toString()) ?? 0;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(10)),
+            ),
+            const SizedBox(height: 20),
+            const Text("Detail Pembagian",
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            const SizedBox(height: 20),
+            _buildDetailRow("Tanggal", item['tgl_transaksi'] ?? '-'),
+            const Divider(),
+            _buildDetailRow("Total Profit", _currencyFormatter.format(total),
+                isBold: true),
+            const SizedBox(height: 10),
+            _buildDetailRow(
+                "Bagian Pengelola", _currencyFormatter.format(nasabah)),
+            _buildDetailRow("Bagian BMT", _currencyFormatter.format(bmt)),
+            const Divider(height: 30),
+
+            // TOMBOL AKSI
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context); // Tutup Sheet
+                      _hapusTransaksi(idTransaksi); // Hapus
+                    },
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    label: const Text("Hapus",
+                        style: TextStyle(color: Colors.red)),
+                    style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        side: const BorderSide(color: Colors.red)),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context); // Tutup Sheet
+                      _kirimWA(item); // Kirim WA
+                    },
+                    icon: const Icon(Icons.share, color: Colors.white),
+                    label: const Text("Kirim WA",
+                        style: TextStyle(color: Colors.white)),
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF25D366),
+                        padding: const EdgeInsets.symmetric(vertical: 12)),
+                  ),
+                ),
+              ],
+            )
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDetailRow(String label, String value, {bool isBold = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: Colors.grey)),
+          Text(value,
+              style: TextStyle(
+                  fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
+                  color: Colors.black87)),
+        ],
+      ),
+    );
+  }
+
+  // --- 5. INPUT FORM SHEET ---
   void _showInputKeuntunganSheet() {
     final totalController = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
-    // Ambil Nisbah dari Akad
-    double nisbahN = (widget.akadData['nisbah_nasabah'] as num).toDouble();
-    double nisbahB = (widget.akadData['nisbah_bmt'] as num).toDouble();
+    double nisbahN =
+        double.tryParse(widget.akadData['nisbah_nasabah'].toString()) ?? 0;
+    double nisbahB =
+        double.tryParse(widget.akadData['nisbah_bmt'].toString()) ?? 0;
 
     double previewNasabah = 0;
     double previewBmt = 0;
@@ -145,7 +295,6 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
                   ),
                   child: Column(
                     children: [
-                      // Header Sheet
                       Container(
                         padding: const EdgeInsets.all(20),
                         decoration: const BoxDecoration(
@@ -173,8 +322,6 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
                           ],
                         ),
                       ),
-
-                      // Form Content
                       Expanded(
                         child: SingleChildScrollView(
                           controller: scrollController,
@@ -218,8 +365,6 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
                                   },
                                 ),
                                 const SizedBox(height: 25),
-
-                                // Preview Pembagian (Card)
                                 Container(
                                   padding: const EdgeInsets.all(15),
                                   decoration: BoxDecoration(
@@ -237,7 +382,7 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
                                         mainAxisAlignment:
                                             MainAxisAlignment.spaceBetween,
                                         children: [
-                                          Text("Nasabah ($nisbahN%)"),
+                                          Text("Nasabah (${nisbahN.toInt()}%)"),
                                           Text(
                                               _currencyFormatter
                                                   .format(previewNasabah),
@@ -251,7 +396,7 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
                                         mainAxisAlignment:
                                             MainAxisAlignment.spaceBetween,
                                         children: [
-                                          Text("BMT ($nisbahB%)"),
+                                          Text("BMT (${nisbahB.toInt()}%)"),
                                           Text(
                                               _currencyFormatter
                                                   .format(previewBmt),
@@ -268,8 +413,6 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
                           ),
                         ),
                       ),
-
-                      // Tombol Simpan
                       Container(
                         padding: const EdgeInsets.all(20),
                         decoration:
@@ -292,11 +435,14 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
                               if (formKey.currentState!.validate()) {
                                 double total = double.parse(
                                     totalController.text.replaceAll('.', ''));
+                                int akadId = int.tryParse(
+                                        widget.akadData['id'].toString()) ??
+                                    0;
 
                                 Map<String, dynamic> row = {
-                                  'akad_id': widget.akadData['id'],
+                                  'akad_id': akadId,
                                   'tgl_transaksi':
-                                      DateFormat('dd/MM/yyyy HH:mm')
+                                      DateFormat('yyyy-MM-dd HH:mm:ss')
                                           .format(DateTime.now()),
                                   'total_keuntungan': total,
                                   'bagian_nasabah': total * (nisbahN / 100),
@@ -304,14 +450,20 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
                                   'keterangan': 'Bagi Hasil Bulanan'
                                 };
 
-                                await _dbHelper.insertMudharabahTransaksi(row);
+                                bool success = await _apiService
+                                    .insertTransaksiBagiHasil(row);
 
                                 if (mounted) {
-                                  Navigator.pop(context); // Tutup Sheet Input
-                                  _loadData(); // Refresh Data Dashboard
-
-                                  // --- BUKA SHEET SUKSES ---
-                                  _showSuccessSheet(row);
+                                  if (success) {
+                                    Navigator.pop(context);
+                                    _loadData(isRefresh: true);
+                                    _showSuccessSheet(row);
+                                  } else {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                            content: Text("Gagal Simpan Data"),
+                                            backgroundColor: Colors.red));
+                                  }
                                 }
                               }
                             },
@@ -334,7 +486,7 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
     );
   }
 
-  // --- SHEET SUKSES (BARU) ---
+  // --- SHEET SUKSES ---
   void _showSuccessSheet(Map<String, dynamic> transaksi) {
     showModalBottomSheet(
       context: context,
@@ -349,7 +501,6 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Header Icon
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 25),
@@ -376,8 +527,6 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
                   ],
                 ),
               ),
-
-              // Detail
               Padding(
                 padding: const EdgeInsets.all(20),
                 child: Column(
@@ -396,8 +545,6 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
                   ],
                 ),
               ),
-
-              // Tombol
               Container(
                 padding: const EdgeInsets.all(20),
                 child: Row(
@@ -435,20 +582,6 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
           ),
         );
       },
-    );
-  }
-
-  Widget _buildDetailRow(String label, String value, {bool isBold = false}) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(label, style: const TextStyle(color: Colors.black54)),
-        Text(value,
-            style: TextStyle(
-                fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-                color: Colors.black87,
-                fontSize: 15)),
-      ],
     );
   }
 
@@ -542,59 +675,73 @@ class _TransaksiBagiHasilPageState extends State<TransaksiBagiHasilPage> {
           ),
           const SizedBox(height: 10),
 
-          // 2. LIST RIWAYAT
+          // 2. LIST RIWAYAT DENGAN REFRESH
           Expanded(
-            child: _riwayatTransaksi.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.history, size: 50, color: Colors.grey[300]),
-                        const SizedBox(height: 10),
-                        const Text("Belum ada transaksi",
-                            style: TextStyle(color: Colors.grey)),
-                      ],
-                    ),
-                  )
-                : ListView.separated(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    itemCount: _riwayatTransaksi.length,
-                    separatorBuilder: (ctx, i) => const SizedBox(height: 10),
-                    itemBuilder: (context, index) {
-                      final item = _riwayatTransaksi[index];
-                      return Card(
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                        child: ListTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 8),
-                          leading: CircleAvatar(
-                            backgroundColor: Colors.green[50],
-                            child: const Icon(Icons.receipt_long,
-                                color: Colors.green),
-                          ),
-                          title: Text(
-                              _currencyFormatter
-                                  .format(item['total_keuntungan']),
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.bold)),
-                          subtitle: Text(item['tgl_transaksi']),
-                          trailing: const Icon(Icons.arrow_forward_ios,
-                              size: 14, color: Colors.grey),
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    DetailBagiHasilPage(transaksiData: item),
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : RefreshIndicator(
+                    onRefresh: () async => await _loadData(isRefresh: true),
+                    child: _riwayatTransaksi.isEmpty
+                        ? ListView(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            children: [
+                              SizedBox(
+                                  height:
+                                      MediaQuery.of(context).size.height * 0.2),
+                              Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.history,
+                                        size: 50, color: Colors.grey[300]),
+                                    const SizedBox(height: 10),
+                                    const Text("Belum ada transaksi",
+                                        style: TextStyle(color: Colors.grey)),
+                                  ],
+                                ),
                               ),
-                            );
-                          },
-                        ),
-                      );
-                    },
+                            ],
+                          )
+                        : ListView.separated(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 8),
+                            itemCount: _riwayatTransaksi.length,
+                            separatorBuilder: (ctx, i) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (context, index) {
+                              final item = _riwayatTransaksi[index];
+                              // Parsing
+                              double total = double.tryParse(
+                                      item['total_keuntungan'].toString()) ??
+                                  0;
+
+                              return Card(
+                                elevation: 2,
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12)),
+                                child: ListTile(
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 16, vertical: 8),
+                                  leading: CircleAvatar(
+                                    backgroundColor: Colors.green[50],
+                                    child: const Icon(Icons.receipt_long,
+                                        color: Colors.green),
+                                  ),
+                                  title: Text(_currencyFormatter.format(total),
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.bold)),
+                                  subtitle: Text(item['tgl_transaksi']),
+                                  trailing: const Icon(Icons.arrow_forward_ios,
+                                      size: 14, color: Colors.grey),
+                                  onTap: () {
+                                    // Panggil Bottom Sheet Detail di sini
+                                    _showDetailBottomSheet(item);
+                                  },
+                                ),
+                              );
+                            },
+                          ),
                   ),
           ),
         ],

@@ -1,21 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../../../data/db_helper.dart';
+// Pastikan path ini sesuai dengan struktur folder Anda
+import '../../../services/api_service.dart';
 
 class DetailBagiHasilPage extends StatelessWidget {
   final Map<String, dynamic> transaksiData;
 
   const DetailBagiHasilPage({super.key, required this.transaksiData});
 
-  // --- LOGIKA HAPUS TRANSAKSI ---
+  // --- LOGIKA HAPUS TRANSAKSI (ONLINE) ---
   Future<void> _hapusTransaksi(BuildContext context) async {
     bool confirm = await showDialog(
           context: context,
           builder: (context) => AlertDialog(
             title: const Text("Hapus Transaksi"),
             content: const Text(
-                "Yakin ingin menghapus data bagi hasil ini? Data tidak dapat dikembalikan."),
+                "Yakin ingin menghapus data bagi hasil ini dari SERVER? Data tidak dapat dikembalikan."),
             actions: [
               TextButton(
                   onPressed: () => Navigator.pop(context, false),
@@ -32,18 +33,26 @@ class DetailBagiHasilPage extends StatelessWidget {
         false;
 
     if (confirm) {
-      final dbHelper = DbHelper();
-      final db = await dbHelper.database;
+      // Inisialisasi Service
+      final apiService = ApiService();
 
-      // Hapus dari tabel mudharabah_transaksi
-      await db.delete('mudharabah_transaksi',
-          where: 'id = ?', whereArgs: [transaksiData['id']]);
+      // Parsing ID Aman
+      int id = int.tryParse(transaksiData['id'].toString()) ?? 0;
+
+      // Panggil Fungsi API (Pastikan fungsi ini sudah ada di api_service.dart)
+      bool success = await apiService.deleteTransaksiBagiHasil(id);
 
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Transaksi berhasil dihapus")));
-        // Kembali ke halaman sebelumnya dengan sinyal refresh (true)
-        Navigator.pop(context, true);
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text("Transaksi berhasil dihapus dari Server")));
+          // Kembali ke halaman sebelumnya dengan sinyal refresh (true)
+          Navigator.pop(context, true);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text("Gagal menghapus data. Cek koneksi internet."),
+              backgroundColor: Colors.red));
+        }
       }
     }
   }
@@ -53,18 +62,13 @@ class DetailBagiHasilPage extends StatelessWidget {
     String rawPhone = transaksiData['telepon']?.toString() ?? "";
     String namaNasabah = transaksiData['nama_nasabah'] ?? "Nasabah";
 
-    // Cek database jika nomor telepon belum ada di transaksiData
-    if (rawPhone.isEmpty && transaksiData['nasabah_id'] != null) {
-      final db = await DbHelper().database;
-      final res = await db.query('anggota',
-          columns: ['telepon', 'nama'],
-          where: 'id = ?',
-          whereArgs: [transaksiData['nasabah_id']]);
-      if (res.isNotEmpty) {
-        rawPhone = res.first['telepon']?.toString() ?? "";
-        namaNasabah = res.first['nama']?.toString() ?? namaNasabah;
-      }
-    }
+    // Parsing Angka untuk WA (Anti Crash)
+    double total =
+        double.tryParse(transaksiData['total_keuntungan'].toString()) ?? 0;
+    double bagiNasabah =
+        double.tryParse(transaksiData['bagian_nasabah'].toString()) ?? 0;
+    double bagiBmt =
+        double.tryParse(transaksiData['bagian_bmt'].toString()) ?? 0;
 
     if (rawPhone.isEmpty) {
       if (context.mounted) {
@@ -74,7 +78,7 @@ class DetailBagiHasilPage extends StatelessWidget {
       return;
     }
 
-    // Format Nomor
+    // Format Nomor (08x -> 628x)
     String phone = rawPhone.replaceAll(RegExp(r'[^0-9]'), '');
     if (phone.startsWith('0')) phone = '62${phone.substring(1)}';
     if (phone.startsWith('8')) phone = '62$phone';
@@ -86,11 +90,11 @@ class DetailBagiHasilPage extends StatelessWidget {
         "Yth. $namaNasabah\n"
         "Berikut rincian bagi hasil periode ini:\n\n"
         "📅 Tanggal : ${transaksiData['tgl_transaksi']}\n"
-        "💰 Total Profit : ${formatter.format(transaksiData['total_keuntungan'])}\n"
+        "💰 Total Profit : ${formatter.format(total)}\n"
         "--------------------------------\n"
         "PEMBAGIAN:\n"
-        "👤 Pengelola : ${formatter.format(transaksiData['bagian_nasabah'])}\n"
-        "🏦 BMT : ${formatter.format(transaksiData['bagian_bmt'])}\n"
+        "👤 Pengelola : ${formatter.format(bagiNasabah)}\n"
+        "🏦 BMT : ${formatter.format(bagiBmt)}\n"
         "--------------------------------\n"
         "_Terima kasih atas kerjasamanya._";
 
@@ -111,6 +115,14 @@ class DetailBagiHasilPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final NumberFormat currencyFormatter =
         NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
+
+    // Parsing Data untuk Tampilan (Anti Error Layar Merah)
+    double totalKeuntungan =
+        double.tryParse(transaksiData['total_keuntungan'].toString()) ?? 0;
+    double bagianNasabah =
+        double.tryParse(transaksiData['bagian_nasabah'].toString()) ?? 0;
+    double bagianBmt =
+        double.tryParse(transaksiData['bagian_bmt'].toString()) ?? 0;
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
@@ -154,8 +166,7 @@ class DetailBagiHasilPage extends StatelessWidget {
                         style: TextStyle(color: Colors.grey)),
                     const SizedBox(height: 5),
                     Text(
-                      currencyFormatter
-                          .format(transaksiData['total_keuntungan']),
+                      currencyFormatter.format(totalKeuntungan),
                       style: const TextStyle(
                           fontSize: 28,
                           fontWeight: FontWeight.bold,
@@ -192,15 +203,11 @@ class DetailBagiHasilPage extends StatelessWidget {
                       children: [
                         _buildRow(
                             "Bagian Pengelola (Nasabah)",
-                            currencyFormatter
-                                .format(transaksiData['bagian_nasabah']),
+                            currencyFormatter.format(bagianNasabah),
                             Colors.blue),
                         const Divider(height: 30),
-                        _buildRow(
-                            "Bagian BMT (Pemodal)",
-                            currencyFormatter
-                                .format(transaksiData['bagian_bmt']),
-                            Colors.green),
+                        _buildRow("Bagian BMT (Pemodal)",
+                            currencyFormatter.format(bagianBmt), Colors.green),
                       ],
                     ),
                   ),

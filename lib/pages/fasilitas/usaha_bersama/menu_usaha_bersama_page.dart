@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../../data/db_helper.dart'; // Import DbHelper
+// UBAH: Gunakan ApiService
+import '../../../services/api_service.dart';
 import 'pj_pelaksana_page.dart';
 import 'permodalan_page.dart';
 import 'pemasukan_usaha_page.dart';
@@ -16,7 +17,8 @@ class MenuUsahaBersamaPage extends StatefulWidget {
 }
 
 class _MenuUsahaBersamaPageState extends State<MenuUsahaBersamaPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
@@ -28,13 +30,11 @@ class _MenuUsahaBersamaPageState extends State<MenuUsahaBersamaPage> {
     _hitungModalTerkumpul();
   }
 
-  // Fungsi menghitung total modal real dari database
+  // Fungsi menghitung total modal real dari API
   Future<void> _hitungModalTerkumpul() async {
-    final data = await _dbHelper.getModalByUsahaId(widget.usaha['id']);
-    double total = 0;
-    for (var item in data) {
-      total += (item['jumlah_modal'] as num).toDouble();
-    }
+    int usahaId = int.tryParse(widget.usaha['id'].toString()) ?? 0;
+    double total = await _apiService.getModalUsahaTerkumpul(usahaId);
+
     if (mounted) {
       setState(() {
         _totalModalTerkumpul = total;
@@ -42,7 +42,7 @@ class _MenuUsahaBersamaPageState extends State<MenuUsahaBersamaPage> {
     }
   }
 
-  // --- FUNGSI HAPUS USAHA (BARU) ---
+  // --- FUNGSI HAPUS USAHA (ONLINE) ---
   Future<void> _hapusUsaha() async {
     // 1. Tampilkan Dialog Konfirmasi
     bool confirm = await showDialog(
@@ -68,20 +68,25 @@ class _MenuUsahaBersamaPageState extends State<MenuUsahaBersamaPage> {
 
     // 2. Eksekusi Hapus
     if (confirm) {
-      final db = await _dbHelper.database;
-      // Hapus data utama usaha
-      await db.delete('usaha_bersama',
-          where: 'id = ?', whereArgs: [widget.usaha['id']]);
+      int id = int.tryParse(widget.usaha['id'].toString()) ?? 0;
 
-      // Opsional: Hapus data terkait (Modal/PJ) jika tidak menggunakan Cascade Delete di DB
-      // await db.delete('usaha_modal', where: 'usaha_id = ?', whereArgs: [widget.usaha['id']]);
-      // await db.delete('usaha_pengurus', where: 'usaha_id = ?', whereArgs: [widget.usaha['id']]);
+      // Panggil API Hapus
+      bool success = await _apiService.deleteUsahaBersama(id);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Data Usaha berhasil dihapus")),
-        );
-        Navigator.pop(context); // Kembali ke halaman list usaha
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text("Data Usaha berhasil dihapus dari Server")),
+          );
+          Navigator.pop(context); // Kembali ke halaman list usaha
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text("Gagal menghapus data"),
+                backgroundColor: Colors.red),
+          );
+        }
       }
     }
   }
@@ -89,11 +94,13 @@ class _MenuUsahaBersamaPageState extends State<MenuUsahaBersamaPage> {
   @override
   Widget build(BuildContext context) {
     final usaha = widget.usaha;
+    // Parsing Modal Awal
+    double modalAwal = double.tryParse(usaha['modal_awal'].toString()) ?? 0;
 
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: Text(usaha['nama_usaha']),
+        title: Text(usaha['nama_usaha'] ?? 'Detail Usaha'),
         backgroundColor: const Color(0xFF2E7D32),
         foregroundColor: Colors.white,
         actions: [
@@ -137,7 +144,7 @@ class _MenuUsahaBersamaPageState extends State<MenuUsahaBersamaPage> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              _formatter.format(usaha['modal_awal']),
+                              _formatter.format(modalAwal),
                               style: const TextStyle(
                                   color: Colors.white70,
                                   fontSize: 18,
@@ -196,7 +203,7 @@ class _MenuUsahaBersamaPageState extends State<MenuUsahaBersamaPage> {
                   ),
                   const SizedBox(height: 10),
                   if (usaha['deskripsi'] != null &&
-                      usaha['deskripsi'].isNotEmpty)
+                      usaha['deskripsi'].toString().isNotEmpty)
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(10),

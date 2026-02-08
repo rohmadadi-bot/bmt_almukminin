@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../../../data/db_helper.dart';
+// UBAH: Pastikan import ini mengarah ke file api_service.dart Anda
+import '../../../services/api_service.dart';
 
 class TransaksiCicilanJualBeliPage extends StatefulWidget {
   const TransaksiCicilanJualBeliPage({super.key});
@@ -13,11 +14,14 @@ class TransaksiCicilanJualBeliPage extends StatefulWidget {
 
 class _TransaksiCicilanJualBeliPageState
     extends State<TransaksiCicilanJualBeliPage> {
-  final _dbHelper = DbHelper();
+  // 1. Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
+
   final _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _riwayatList = [];
+  // Variable State
+  List<dynamic> _riwayatList = [];
   double _totalAkadDisetujui = 0;
   double _totalCicilanMasuk = 0;
   double _totalBelumTercicil = 0;
@@ -30,47 +34,60 @@ class _TransaksiCicilanJualBeliPageState
     _loadData();
   }
 
+  // --- FUNGSI LOAD DATA (API) ---
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
-    final db = await _dbHelper.database;
 
-    final riwayat = await db.rawQuery('''
-      SELECT ang.*, ak.nama_barang, angt.nama as nama_nasabah, angt.telepon, angt.id as nasabah_id
-      FROM murabah_angsuran ang
-      JOIN murabahah_akad ak ON ang.akad_id = ak.id
-      JOIN anggota angt ON ak.nasabah_id = angt.id
-      ORDER BY ang.id DESC
-    ''');
+    try {
+      // Panggil API
+      final result = await _apiService.getTransaksiJualBeli();
 
-    final akadStats = await db.rawQuery('''
-      SELECT SUM(total_piutang) as total_piutang, SUM(margin) as total_margin 
-      FROM murabahah_akad 
-      WHERE status = 'Aktif' OR status = 'Disetujui' OR status = 'Lunas'
-    ''');
+      // DEBUG: Cek Data di Console
+      print("API Transaksi Status: ${result['status']}");
 
-    final angsuranStats = await db.rawQuery('''
-      SELECT SUM(jumlah_bayar) as total_masuk FROM murabah_angsuran
-    ''');
+      if (mounted) {
+        if (result['status'] == true) {
+          final stats = result['stats'];
+          // Pastikan data berupa List, kalau null kasih list kosong
+          final List<dynamic> dataList =
+              (result['data'] as List<dynamic>?) ?? [];
 
-    double totalPiutang =
-        (akadStats.first['total_piutang'] as num?)?.toDouble() ?? 0.0;
-    double totalMargin =
-        (akadStats.first['total_margin'] as num?)?.toDouble() ?? 0.0;
-    double totalMasuk =
-        (angsuranStats.first['total_masuk'] as num?)?.toDouble() ?? 0.0;
+          setState(() {
+            _riwayatList = dataList;
 
-    if (mounted) {
-      setState(() {
-        _riwayatList = riwayat;
-        _totalAkadDisetujui = totalPiutang;
-        _potensiKeuntungan = totalMargin;
-        _totalCicilanMasuk = totalMasuk;
-        _totalBelumTercicil = totalPiutang - totalMasuk;
-        _isLoading = false;
-      });
+            // Parsing Statistik Aman
+            if (stats != null) {
+              _totalAkadDisetujui =
+                  double.tryParse(stats['total_piutang'].toString()) ?? 0;
+              _potensiKeuntungan =
+                  double.tryParse(stats['total_margin'].toString()) ?? 0;
+              _totalCicilanMasuk =
+                  double.tryParse(stats['total_masuk'].toString()) ?? 0;
+              _totalBelumTercicil =
+                  double.tryParse(stats['sisa_piutang'].toString()) ?? 0;
+            } else {
+              // Reset jika stats null (misal DB kosong)
+              _totalAkadDisetujui = 0;
+              _potensiKeuntungan = 0;
+              _totalCicilanMasuk = 0;
+              _totalBelumTercicil = 0;
+            }
+
+            _isLoading = false;
+          });
+        } else {
+          // Jika status false (error server)
+          print("API Error: ${result['message']}");
+          setState(() => _isLoading = false);
+        }
+      }
+    } catch (e) {
+      print("Error Koneksi Load Data: $e");
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
+  // --- HELPER WA ---
   String _formatPhone(String rawPhone) {
     String digitsOnly = rawPhone.replaceAll(RegExp(r'[^0-9]'), '');
     if (digitsOnly.startsWith('0')) return '62${digitsOnly.substring(1)}';
@@ -86,6 +103,8 @@ class _TransaksiCicilanJualBeliPageState
       return;
     }
 
+    double bayar = double.tryParse(item['jumlah_bayar'].toString()) ?? 0;
+
     String pesan = "✅ *BUKTI PEMBAYARAN CICILAN*\n"
         "🏛 *BMT AL MUKMININ*\n"
         "--------------------------------\n"
@@ -93,7 +112,7 @@ class _TransaksiCicilanJualBeliPageState
         "Barang  : ${item['nama_barang']}\n"
         "Tanggal : ${item['tgl_bayar']}\n"
         "--------------------------------\n"
-        "💰 *BAYAR : ${_formatter.format(item['jumlah_bayar'])}*\n"
+        "💰 *BAYAR : ${_formatter.format(bayar)}*\n"
         "--------------------------------\n"
         "_Terima kasih. Jazakumullah khairan._";
 
@@ -104,13 +123,14 @@ class _TransaksiCicilanJualBeliPageState
     }
   }
 
+  // --- HAPUS TRANSAKSI (API) ---
   void _hapusTransaksi(int id) async {
     bool confirm = await showDialog(
           context: context,
           builder: (context) => AlertDialog(
             title: const Text("Hapus Transaksi"),
             content: const Text(
-                "Yakin ingin menghapus pembayaran ini? Sisa hutang nasabah akan bertambah kembali."),
+                "Yakin ingin menghapus pembayaran ini dari SERVER? Sisa hutang nasabah akan bertambah kembali."),
             actions: [
               TextButton(
                   onPressed: () => Navigator.pop(context, false),
@@ -126,19 +146,29 @@ class _TransaksiCicilanJualBeliPageState
         false;
 
     if (confirm) {
-      final db = await _dbHelper.database;
-      await db.delete('murabah_angsuran', where: 'id = ?', whereArgs: [id]);
+      // Panggil API Delete
+      bool success = await _apiService.deleteCicilan(id);
+
       if (mounted) {
-        Navigator.pop(context); // Tutup Bottom Sheet Detail
-        _loadData();
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Transaksi berhasil dihapus")));
+        if (success) {
+          Navigator.pop(context); // Tutup Bottom Sheet Detail
+          _loadData(); // Refresh List
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text("Transaksi berhasil dihapus dari Server")));
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text("Gagal menghapus"), backgroundColor: Colors.red));
+        }
       }
     }
   }
 
   // --- SHOW DETAIL RIWAYAT (BOTTOM SHEET) ---
   void _showDetailBottomSheet(Map<String, dynamic> item) {
+    // Parsing ID & Jumlah aman
+    int idTransaksi = int.tryParse(item['id'].toString()) ?? 0;
+    double jumlahBayar = double.tryParse(item['jumlah_bayar'].toString()) ?? 0;
+
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -162,11 +192,11 @@ class _TransaksiCicilanJualBeliPageState
             const Text("Detail Pembayaran",
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
             const SizedBox(height: 20),
-            _buildDetailRow("Nasabah", item['nama_nasabah']),
-            _buildDetailRow("Barang", item['nama_barang']),
-            _buildDetailRow("Tanggal", item['tgl_bayar']),
+            _buildDetailRow("Nasabah", item['nama_nasabah'] ?? '-'),
+            _buildDetailRow("Barang", item['nama_barang'] ?? '-'),
+            _buildDetailRow("Tanggal", item['tgl_bayar'] ?? '-'),
             const Divider(height: 30),
-            Text(_formatter.format(item['jumlah_bayar']),
+            Text(_formatter.format(jumlahBayar),
                 style: const TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.bold,
@@ -176,7 +206,7 @@ class _TransaksiCicilanJualBeliPageState
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () => _hapusTransaksi(item['id']),
+                    onPressed: () => _hapusTransaksi(idTransaksi),
                     icon: const Icon(Icons.delete, color: Colors.red),
                     label: const Text("Hapus",
                         style: TextStyle(color: Colors.red)),
@@ -218,25 +248,21 @@ class _TransaksiCicilanJualBeliPageState
     );
   }
 
-  // --- STEP 1: CARI NASABAH (BOTTOM SHEET) ---
+  // --- STEP 1: CARI NASABAH (BOTTOM SHEET - API) ---
   void _showCariNasabahSheet() async {
-    final db = await _dbHelper.database;
-    List<Map<String, dynamic>> allAkad = await db.rawQuery('''
-      SELECT m.*, a.nama as nama_nasabah, a.telepon 
-      FROM murabahah_akad m
-      JOIN anggota a ON m.nasabah_id = a.id
-      WHERE m.status = 'Disetujui' OR m.status = 'Aktif'
-      ORDER BY a.nama ASC
-    ''');
+    // Ambil Data Akad Aktif dari API
+    List<dynamic> allAkad = await _apiService.getAkadAktifForBayar();
 
-    Map<int, List<Map<String, dynamic>>> groupedData = {};
+    // Grouping Data by Nasabah (Manual Logic)
+    Map<int, List<dynamic>> groupedData = {};
     for (var item in allAkad) {
-      int nId = item['nasabah_id'];
+      int nId = int.tryParse(item['nasabah_id'].toString()) ?? 0;
       if (!groupedData.containsKey(nId)) groupedData[nId] = [];
       groupedData[nId]!.add(item);
     }
-    List<List<Map<String, dynamic>>> listNasabah = groupedData.values.toList();
-    List<List<Map<String, dynamic>>> filtered = List.from(listNasabah);
+
+    List<List<dynamic>> listNasabah = groupedData.values.toList();
+    List<List<dynamic>> filtered = List.from(listNasabah);
 
     if (!mounted) return;
 
@@ -268,7 +294,7 @@ class _TransaksiCicilanJualBeliPageState
                     ),
                     const Padding(
                       padding: EdgeInsets.only(bottom: 10),
-                      child: Text("Pilih Nasabah",
+                      child: Text("Pilih Nasabah (Online)",
                           style: TextStyle(
                               fontWeight: FontWeight.bold, fontSize: 18)),
                     ),
@@ -309,13 +335,13 @@ class _TransaksiCicilanJualBeliPageState
                                   leading: CircleAvatar(
                                     backgroundColor: Colors.blue[50],
                                     child: Text(
-                                        firstItem['nama_nasabah'][0]
+                                        (firstItem['nama_nasabah'] ?? '?')[0]
                                             .toUpperCase(),
                                         style: const TextStyle(
                                             color: Colors.blue,
                                             fontWeight: FontWeight.bold)),
                                   ),
-                                  title: Text(firstItem['nama_nasabah'],
+                                  title: Text(firstItem['nama_nasabah'] ?? '-',
                                       style: const TextStyle(
                                           fontWeight: FontWeight.bold)),
                                   subtitle: Text(
@@ -340,12 +366,15 @@ class _TransaksiCicilanJualBeliPageState
   }
 
   // --- STEP 2: INPUT BAYAR (BOTTOM SHEET) ---
-  void _showFormPembayaranSheet(List<Map<String, dynamic>> nasabahAkads) {
-    List<Map<String, dynamic>> selectedItems = List.from(nasabahAkads);
+  void _showFormPembayaranSheet(List<dynamic> nasabahAkads) {
+    List<dynamic> selectedItems = List.from(nasabahAkads);
 
     double hitungTotal() {
-      return selectedItems.fold(
-          0, (sum, item) => sum + (item['angsuran_bulanan'] as num).toDouble());
+      return selectedItems.fold(0, (sum, item) {
+        double angsuran =
+            double.tryParse(item['angsuran_bulanan'].toString()) ?? 0;
+        return sum + angsuran;
+      });
     }
 
     showModalBottomSheet(
@@ -384,7 +413,7 @@ class _TransaksiCicilanJualBeliPageState
                                     color: Colors.white,
                                     fontSize: 18,
                                     fontWeight: FontWeight.bold)),
-                            Text(nasabahAkads.first['nama_nasabah'],
+                            Text(nasabahAkads.first['nama_nasabah'] ?? '-',
                                 style: const TextStyle(
                                     color: Colors.white70, fontSize: 13)),
                           ],
@@ -406,6 +435,10 @@ class _TransaksiCicilanJualBeliPageState
                     itemBuilder: (ctx, i) {
                       final item = nasabahAkads[i];
                       final isChecked = selectedItems.contains(item);
+                      double angsuran = double.tryParse(
+                              item['angsuran_bulanan'].toString()) ??
+                          0;
+
                       return InkWell(
                         onTap: () {
                           setStateSheet(() {
@@ -443,12 +476,12 @@ class _TransaksiCicilanJualBeliPageState
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(item['nama_barang'],
+                                    Text(item['nama_barang'] ?? '-',
                                         style: const TextStyle(
                                             fontWeight: FontWeight.bold,
                                             fontSize: 14)),
                                     Text(
-                                        "Cicilan: ${_formatter.format(item['angsuran_bulanan'])}",
+                                        "Cicilan: ${_formatter.format(angsuran)}",
                                         style: const TextStyle(
                                             fontSize: 12, color: Colors.grey)),
                                   ],
@@ -503,23 +536,56 @@ class _TransaksiCicilanJualBeliPageState
                             onPressed: selectedItems.isEmpty
                                 ? null
                                 : () async {
+                                    // Tampilkan Loading
+                                    showDialog(
+                                        context: context,
+                                        barrierDismissible: false,
+                                        builder: (ctx) => const Center(
+                                            child:
+                                                CircularProgressIndicator()));
+
+                                    int suksesCount = 0;
+
+                                    // LOOP KIRIM DATA KE API
                                     for (var akad in selectedItems) {
-                                      await _dbHelper.insertAngsuran({
-                                        'akad_id': akad['id'],
-                                        'jumlah_bayar':
-                                            (akad['angsuran_bulanan'] as num)
-                                                .toDouble(),
+                                      int akadId =
+                                          int.tryParse(akad['id'].toString()) ??
+                                              0;
+                                      double jumlah = double.tryParse(
+                                              akad['angsuran_bulanan']
+                                                  .toString()) ??
+                                          0;
+
+                                      bool berhasil =
+                                          await _apiService.inputBayarCicilan({
+                                        'akad_id': akadId,
+                                        'jumlah_bayar': jumlah,
+                                        // FORMAT TANGGAL SQL (yyyy-MM-dd HH:mm:ss)
                                         'tgl_bayar':
-                                            DateFormat('dd/MM/yyyy HH:mm')
+                                            DateFormat('yyyy-MM-dd HH:mm:ss')
                                                 .format(DateTime.now()),
                                         'keterangan': 'Cicilan Murabahah',
                                       });
+
+                                      if (berhasil) suksesCount++;
                                     }
+
                                     if (mounted) {
-                                      Navigator.pop(context); // Tutup Input
-                                      _loadData(); // Refresh Data
-                                      _showSuccessBottomSheet(
-                                          selectedItems, currentTotal);
+                                      Navigator.pop(context); // Tutup Loading
+
+                                      if (suksesCount > 0) {
+                                        Navigator.pop(
+                                            context); // Tutup Sheet Input
+                                        _loadData(); // Refresh Data Dashboard
+                                        _showSuccessBottomSheet(
+                                            selectedItems, currentTotal);
+                                      } else {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(const SnackBar(
+                                                content: Text(
+                                                    "Gagal Simpan Data. Cek Koneksi/DB."),
+                                                backgroundColor: Colors.red));
+                                      }
                                     }
                                   },
                             child: const Text("BAYAR SEKARANG",
@@ -542,8 +608,7 @@ class _TransaksiCicilanJualBeliPageState
   }
 
   // --- STEP 3: SUKSES (BOTTOM SHEET) ---
-  void _showSuccessBottomSheet(
-      List<Map<String, dynamic>> akads, double totalBayar) {
+  void _showSuccessBottomSheet(List<dynamic> akads, double totalBayar) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -593,31 +658,39 @@ class _TransaksiCicilanJualBeliPageState
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _buildReceiptRow("Nasabah", akads.first['nama_nasabah'],
+                      _buildReceiptRow(
+                          "Nasabah", akads.first['nama_nasabah'] ?? '-',
                           isBold: true),
                       const Divider(height: 25),
                       const Text("Rincian:",
                           style: TextStyle(fontSize: 12, color: Colors.grey)),
                       const SizedBox(height: 10),
-                      ...akads.map((e) => Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Expanded(
-                                    child: Text(e['nama_barang'],
-                                        style: const TextStyle(fontSize: 14))),
-                                Text(_formatter.format(e['angsuran_bulanan']),
-                                    style: const TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w500)),
-                              ],
-                            ),
-                          )),
+                      ...akads.map((e) {
+                        double jumlah =
+                            double.tryParse(e['angsuran_bulanan'].toString()) ??
+                                0;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                  child: Text(e['nama_barang'] ?? '-',
+                                      style: const TextStyle(fontSize: 14))),
+                              Text(_formatter.format(jumlah),
+                                  style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w500)),
+                            ],
+                          ),
+                        );
+                      }),
                       const Divider(height: 25),
                       _buildReceiptRow(
                           "TOTAL DITERIMA", _formatter.format(totalBayar),
-                          isBold: true, size: 18, color: Color(0xFF2E7D32)),
+                          isBold: true,
+                          size: 18,
+                          color: const Color(0xFF2E7D32)),
                     ],
                   ),
                 ),
@@ -659,8 +732,11 @@ class _TransaksiCicilanJualBeliPageState
 
                             String listBarang = "";
                             for (var item in akads) {
+                              double jml = double.tryParse(
+                                      item['angsuran_bulanan'].toString()) ??
+                                  0;
                               listBarang +=
-                                  "- ${item['nama_barang']} (${_formatter.format(item['angsuran_bulanan'])})\n";
+                                  "- ${item['nama_barang']} (${_formatter.format(jml)})\n";
                             }
 
                             String pesan = "✅ *BUKTI PEMBAYARAN CICILAN*\n"
@@ -825,63 +901,84 @@ class _TransaksiCicilanJualBeliPageState
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : _riwayatList.isEmpty
-                    ? const Center(
-                        child: Text('Belum ada transaksi cicilan.',
-                            style: TextStyle(color: Colors.grey)))
-                    : ListView.separated(
-                        padding: const EdgeInsets.all(16),
-                        itemCount: _riwayatList.length,
-                        separatorBuilder: (context, index) =>
-                            const SizedBox(height: 10),
-                        itemBuilder: (context, index) {
-                          final trx = _riwayatList[index];
-                          return InkWell(
-                            onTap: () => _showDetailBottomSheet(trx),
-                            borderRadius: BorderRadius.circular(12),
-                            child: Container(
-                              decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(12),
-                                  boxShadow: [
-                                    BoxShadow(
-                                        color: Colors.black.withOpacity(0.05),
-                                        blurRadius: 10,
-                                        offset: const Offset(0, 4))
-                                  ]),
-                              child: ListTile(
-                                contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 16, vertical: 8),
-                                leading: CircleAvatar(
-                                    backgroundColor: Colors.orange[50],
-                                    child: const Icon(Icons.receipt_long,
-                                        color: Colors.orange)),
-                                title: Text(trx['nama_nasabah'] ?? 'Nasabah',
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.bold)),
-                                subtitle: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const SizedBox(height: 4),
-                                    Text(trx['nama_barang'],
-                                        style: const TextStyle(
-                                            color: Colors.black87)),
-                                    Text(trx['tgl_bayar'],
-                                        style: const TextStyle(
-                                            fontSize: 11, color: Colors.grey)),
-                                  ],
-                                ),
-                                trailing: Text(
-                                    _formatter.format(trx['jumlah_bayar']),
-                                    style: const TextStyle(
-                                        color: Color(0xFF2E7D32),
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 15)),
+                : RefreshIndicator(
+                    onRefresh: _loadData,
+                    child: _riwayatList.isEmpty
+                        ? ListView(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            children: [
+                              SizedBox(
+                                  height:
+                                      MediaQuery.of(context).size.height * 0.1),
+                              const Center(
+                                child: Text('Belum ada transaksi cicilan.',
+                                    style: TextStyle(color: Colors.grey)),
                               ),
-                            ),
-                          );
-                        },
-                      ),
+                            ],
+                          )
+                        : ListView.separated(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.all(16),
+                            itemCount: _riwayatList.length,
+                            separatorBuilder: (context, index) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (context, index) {
+                              final trx = _riwayatList[index];
+                              // Parsing Jumlah Bayar aman
+                              double bayar = double.tryParse(
+                                      trx['jumlah_bayar'].toString()) ??
+                                  0;
+
+                              return InkWell(
+                                onTap: () => _showDetailBottomSheet(trx),
+                                borderRadius: BorderRadius.circular(12),
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(12),
+                                      boxShadow: [
+                                        BoxShadow(
+                                            color:
+                                                Colors.black.withOpacity(0.05),
+                                            blurRadius: 10,
+                                            offset: const Offset(0, 4))
+                                      ]),
+                                  child: ListTile(
+                                    contentPadding: const EdgeInsets.symmetric(
+                                        horizontal: 16, vertical: 8),
+                                    leading: CircleAvatar(
+                                        backgroundColor: Colors.orange[50],
+                                        child: const Icon(Icons.receipt_long,
+                                            color: Colors.orange)),
+                                    title: Text(
+                                        trx['nama_nasabah'] ?? 'Nasabah',
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.bold)),
+                                    subtitle: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const SizedBox(height: 4),
+                                        Text(trx['nama_barang'] ?? '-',
+                                            style: const TextStyle(
+                                                color: Colors.black87)),
+                                        Text(trx['tgl_bayar'] ?? '-',
+                                            style: const TextStyle(
+                                                fontSize: 11,
+                                                color: Colors.grey)),
+                                      ],
+                                    ),
+                                    trailing: Text(_formatter.format(bayar),
+                                        style: const TextStyle(
+                                            color: Color(0xFF2E7D32),
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 15)),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
           ),
         ],
       ),

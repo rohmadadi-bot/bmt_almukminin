@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../../data/db_helper.dart';
+// UBAH: Gunakan ApiService
+import '../../../services/api_service.dart';
 import 'detail_akad_pinjaman_lunak_page.dart';
 
 class AkadPinjamanLunakPage extends StatefulWidget {
@@ -11,12 +12,14 @@ class AkadPinjamanLunakPage extends StatefulWidget {
 }
 
 class _AkadPinjamanLunakPageState extends State<AkadPinjamanLunakPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
+
   final NumberFormat _currencyFormatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _listPinjaman = [];
-  List<Map<String, dynamic>> _listAnggota = [];
+  List<dynamic> _listPinjaman = [];
+  List<dynamic> _listAnggota = [];
   bool _isLoading = true;
 
   // Variabel Header Summary
@@ -31,39 +34,49 @@ class _AkadPinjamanLunakPageState extends State<AkadPinjamanLunakPage> {
     _loadAnggota();
   }
 
-  // --- 1. LOAD DATA DARI DATABASE ---
-  Future<void> _loadData() async {
-    final data = await _dbHelper.getAllPinjamanLunak();
-
-    double totalDana = 0;
-    int cSetuju = 0;
-    int cAju = 0;
-
-    for (var item in data) {
-      if (item['status'] == 'Disetujui' || item['status'] == 'Lunas') {
-        totalDana += (item['nominal'] as num).toDouble();
-        cSetuju++;
-      } else if (item['status'] == 'Pengajuan') {
-        cAju++;
-      }
+  // --- 1. LOAD DATA DARI API ---
+  Future<void> _loadData({bool isRefresh = true}) async {
+    if (!isRefresh) {
+      setState(() => _isLoading = true);
     }
 
-    if (mounted) {
-      setState(() {
-        _listPinjaman = data;
-        _totalDanaDipinjamkan = totalDana;
-        _countDisetujui = cSetuju;
-        _countDiajukan = cAju;
-        _isLoading = false;
-      });
+    try {
+      final result = await _apiService.getPinjamanLunak();
+
+      if (mounted) {
+        if (result['status'] == true) {
+          final stats = result['stats'];
+          final List<dynamic> data = result['data'] ?? [];
+
+          setState(() {
+            _listPinjaman = data;
+
+            if (stats != null) {
+              _totalDanaDipinjamkan =
+                  double.tryParse(stats['total_dana'].toString()) ?? 0;
+              _countDisetujui =
+                  int.tryParse(stats['disetujui'].toString()) ?? 0;
+              _countDiajukan = int.tryParse(stats['pengajuan'].toString()) ?? 0;
+            }
+
+            _isLoading = false;
+          });
+        } else {
+          setState(() => _isLoading = false);
+        }
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _loadAnggota() async {
-    final data = await _dbHelper.getAllAnggota();
-    setState(() {
-      _listAnggota = data;
-    });
+    final data = await _apiService.getAllAnggota();
+    if (mounted) {
+      setState(() {
+        _listAnggota = data;
+      });
+    }
   }
 
   // --- 2. LOGIKA UPDATE STATUS (BOTTOM SHEET) ---
@@ -119,16 +132,27 @@ class _AkadPinjamanLunakPageState extends State<AkadPinjamanLunakPage> {
                   Expanded(
                     child: ElevatedButton(
                       onPressed: () async {
-                        await _dbHelper.updateStatusPinjaman(id, newStatus);
+                        // PANGGIL API UPDATE STATUS
+                        bool success = await _apiService.updateStatusPinjaman(
+                            id, newStatus);
+
                         if (mounted) {
-                          Navigator.pop(context);
-                          _loadData();
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                                content: Text(
-                                    "Status berhasil diubah ke $newStatus"),
-                                backgroundColor: actionColor),
-                          );
+                          Navigator.pop(context); // Tutup Sheet
+                          if (success) {
+                            _loadData(isRefresh: true); // Refresh List
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                  content: Text(
+                                      "Status berhasil diubah ke $newStatus"),
+                                  backgroundColor: actionColor),
+                            );
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text("Gagal mengubah status"),
+                                  backgroundColor: Colors.red),
+                            );
+                          }
                         }
                       },
                       style: ElevatedButton.styleFrom(
@@ -150,10 +174,10 @@ class _AkadPinjamanLunakPageState extends State<AkadPinjamanLunakPage> {
   }
 
   // --- 3. PENCARIAN NASABAH (BOTTOM SHEET DRAGGABLE) ---
-  Future<Map<String, dynamic>?> _showSearchAnggotaSheet() {
-    List<Map<String, dynamic>> filtered = List.from(_listAnggota);
+  Future<dynamic> _showSearchAnggotaSheet() {
+    List<dynamic> filtered = List.from(_listAnggota);
 
-    return showModalBottomSheet<Map<String, dynamic>>(
+    return showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -205,6 +229,7 @@ class _AkadPinjamanLunakPageState extends State<AkadPinjamanLunakPage> {
                             setStateSheet(() {
                               filtered = _listAnggota
                                   .where((a) => a['nama']
+                                      .toString()
                                       .toLowerCase()
                                       .contains(val.toLowerCase()))
                                   .toList();
@@ -228,16 +253,17 @@ class _AkadPinjamanLunakPageState extends State<AkadPinjamanLunakPage> {
                                   return ListTile(
                                     leading: CircleAvatar(
                                       backgroundColor: Colors.green[50],
-                                      child: Text(item['nama'][0].toUpperCase(),
+                                      child: Text(
+                                          (item['nama'] ?? '?')[0]
+                                              .toUpperCase(),
                                           style: TextStyle(
                                               color: Colors.green[800],
                                               fontWeight: FontWeight.bold)),
                                     ),
-                                    title: Text(item['nama'],
+                                    title: Text(item['nama'] ?? '-',
                                         style: const TextStyle(
                                             fontWeight: FontWeight.bold)),
-                                    subtitle:
-                                        Text("NIK: ${item['nik'] ?? '-'}"),
+                                    subtitle: Text("ID: ${item['nik'] ?? '-'}"),
                                     onTap: () => Navigator.pop(context, item),
                                   );
                                 },
@@ -343,7 +369,8 @@ class _AkadPinjamanLunakPageState extends State<AkadPinjamanLunakPage> {
                                         await _showSearchAnggotaSheet();
                                     if (result != null) {
                                       setStateSheet(() {
-                                        selectedNasabah = result;
+                                        selectedNasabah =
+                                            Map<String, dynamic>.from(result);
                                         namaNasabahTampil = result['nama'];
                                       });
                                     }
@@ -526,34 +553,53 @@ class _AkadPinjamanLunakPageState extends State<AkadPinjamanLunakPage> {
                                     .text
                                     .replaceAll('.', '')
                                     .replaceAll(',', ''));
-                                String tgl = DateFormat('dd/MM/yyyy')
-                                    .format(DateTime.now());
+                                String tgl =
+                                    DateFormat('yyyy-MM-dd') // Format SQL
+                                        .format(DateTime.now());
+
+                                int idNasabah = int.tryParse(
+                                        selectedNasabah!['id'].toString()) ??
+                                    0;
 
                                 Map<String, dynamic> newData = {
-                                  'nasabah_id': selectedNasabah!['id'],
+                                  'nasabah_id': idNasabah,
                                   'tgl_pengajuan': tgl,
                                   'nominal': nominal,
                                   'deskripsi': deskripsiController.text,
                                   'status': statusDipilih,
                                 };
 
-                                await _dbHelper.insertPinjamanLunak(newData);
-
-                                newData['nama_nasabah'] =
-                                    selectedNasabah!['nama'];
-                                newData['telepon'] =
-                                    selectedNasabah!['telepon'];
+                                // PANGGIL API INSERT
+                                int newId = await _apiService
+                                    .insertPinjamanLunak(newData);
 
                                 if (mounted) {
-                                  Navigator.pop(context);
-                                  _loadData();
-                                  Navigator.push(
-                                          context,
-                                          MaterialPageRoute(
-                                              builder: (context) =>
-                                                  DetailAkadPinjamanLunakPage(
-                                                      dataPinjaman: newData)))
-                                      .then((_) => _loadData());
+                                  if (newId > 0) {
+                                    newData['id'] =
+                                        newId; // Tambahkan ID baru ke data
+                                    newData['nama_nasabah'] =
+                                        selectedNasabah!['nama'];
+                                    newData['telepon'] =
+                                        selectedNasabah!['telepon'];
+
+                                    Navigator.pop(context); // Tutup Sheet
+                                    _loadData(isRefresh: true); // Refresh List
+
+                                    // Pindah ke Detail Page
+                                    Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                                builder: (context) =>
+                                                    DetailAkadPinjamanLunakPage(
+                                                        dataPinjaman: newData)))
+                                        .then((_) => _loadData());
+                                  } else {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                            content:
+                                                Text("Gagal menyimpan data"),
+                                            backgroundColor: Colors.red));
+                                  }
                                 }
                               }
                             },
@@ -675,140 +721,162 @@ class _AkadPinjamanLunakPageState extends State<AkadPinjamanLunakPage> {
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : _listPinjaman.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.history_edu,
-                                size: 60, color: Colors.grey[300]),
-                            const SizedBox(height: 10),
-                            const Text("Belum ada data akad",
-                                style: TextStyle(color: Colors.grey)),
-                          ],
-                        ),
-                      )
-                    : ListView.separated(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
-                        itemCount: _listPinjaman.length,
-                        separatorBuilder: (ctx, i) =>
-                            const SizedBox(height: 10),
-                        itemBuilder: (context, index) {
-                          final item = _listPinjaman[index];
-
-                          final bool isApproved =
-                              item['status'] == 'Disetujui' ||
-                                  item['status'] == 'Lunas';
-                          final bool isRejected =
-                              item['status'] == 'Tidak Disetujui';
-
-                          Color statusColor;
-                          IconData statusIcon;
-                          String statusText;
-
-                          if (isApproved) {
-                            statusColor = Colors.green;
-                            statusIcon = Icons.check_circle;
-                            statusText = "Status: Disetujui";
-                          } else if (isRejected) {
-                            statusColor = Colors.red;
-                            statusIcon = Icons.cancel;
-                            statusText = "Status: Tidak Disetujui";
-                          } else {
-                            statusColor = Colors.orange;
-                            statusIcon = Icons.access_time_filled;
-                            statusText = "Status: Pengajuan";
-                          }
-
-                          return Card(
-                            elevation: 2,
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12)),
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(12),
-                              onTap: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) =>
-                                        DetailAkadPinjamanLunakPage(
-                                            dataPinjaman: item),
-                                  ),
-                                ).then((_) => _loadData());
-                              },
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                    vertical: 8.0, horizontal: 4.0),
-                                child: ListTile(
-                                  leading: CircleAvatar(
-                                    backgroundColor:
-                                        statusColor.withOpacity(0.1),
-                                    child: Icon(statusIcon, color: statusColor),
-                                  ),
-                                  title: Text(
-                                      item['nama_nasabah'] ?? 'Tanpa Nama',
-                                      style: const TextStyle(
-                                          fontWeight: FontWeight.bold)),
-                                  subtitle: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        _currencyFormatter
-                                            .format(item['nominal']),
-                                        style: const TextStyle(
-                                            color: Colors.black87,
-                                            fontWeight: FontWeight.w500),
-                                      ),
-                                      Text(item['deskripsi'],
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(fontSize: 12)),
-                                      const SizedBox(height: 6),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 8, vertical: 2),
-                                        decoration: BoxDecoration(
-                                          color: statusColor.withOpacity(0.1),
-                                          borderRadius:
-                                              BorderRadius.circular(4),
-                                        ),
-                                        child: Text(
-                                          statusText,
-                                          style: TextStyle(
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.bold,
-                                              color: statusColor),
-                                        ),
-                                      )
-                                    ],
-                                  ),
-                                  // Switch Konfirmasi Status
-                                  trailing: isRejected
-                                      ? const SizedBox(width: 10)
-                                      : Transform.scale(
-                                          scale: 0.8,
-                                          child: Switch(
-                                            value: isApproved,
-                                            activeColor: Colors.green,
-                                            inactiveThumbColor: Colors.orange,
-                                            inactiveTrackColor:
-                                                Colors.orange[100],
-                                            onChanged: (val) {
-                                              // Panggil Bottom Sheet Konfirmasi
-                                              _showStatusConfirmationSheet(
-                                                  item['id'], item['status']);
-                                            },
-                                          ),
-                                        ),
+                : RefreshIndicator(
+                    onRefresh: () async => _loadData(isRefresh: true),
+                    child: _listPinjaman.isEmpty
+                        ? ListView(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            children: [
+                              SizedBox(
+                                  height: MediaQuery.of(context).size.height *
+                                      0.15),
+                              Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.history_edu,
+                                        size: 60, color: Colors.grey[300]),
+                                    const SizedBox(height: 10),
+                                    const Text("Belum ada data akad",
+                                        style: TextStyle(color: Colors.grey)),
+                                  ],
                                 ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
+                              )
+                            ],
+                          )
+                        : ListView.separated(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 8),
+                            itemCount: _listPinjaman.length,
+                            separatorBuilder: (ctx, i) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (context, index) {
+                              final item = _listPinjaman[index];
+                              // Parsing Aman
+                              double nominal =
+                                  double.tryParse(item['nominal'].toString()) ??
+                                      0;
+                              int idPinjaman =
+                                  int.tryParse(item['id'].toString()) ?? 0;
+
+                              final bool isApproved =
+                                  item['status'] == 'Disetujui' ||
+                                      item['status'] == 'Lunas';
+                              final bool isRejected =
+                                  item['status'] == 'Tidak Disetujui';
+
+                              Color statusColor;
+                              IconData statusIcon;
+                              String statusText;
+
+                              if (isApproved) {
+                                statusColor = Colors.green;
+                                statusIcon = Icons.check_circle;
+                                statusText = "Status: Disetujui";
+                              } else if (isRejected) {
+                                statusColor = Colors.red;
+                                statusIcon = Icons.cancel;
+                                statusText = "Status: Tidak Disetujui";
+                              } else {
+                                statusColor = Colors.orange;
+                                statusIcon = Icons.access_time_filled;
+                                statusText = "Status: Pengajuan";
+                              }
+
+                              return Card(
+                                elevation: 2,
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12)),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(12),
+                                  onTap: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) =>
+                                            DetailAkadPinjamanLunakPage(
+                                                dataPinjaman: item),
+                                      ),
+                                    ).then((_) => _loadData());
+                                  },
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 8.0, horizontal: 4.0),
+                                    child: ListTile(
+                                      leading: CircleAvatar(
+                                        backgroundColor:
+                                            statusColor.withOpacity(0.1),
+                                        child: Icon(statusIcon,
+                                            color: statusColor),
+                                      ),
+                                      title: Text(
+                                          item['nama_nasabah'] ?? 'Tanpa Nama',
+                                          style: const TextStyle(
+                                              fontWeight: FontWeight.bold)),
+                                      subtitle: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            _currencyFormatter.format(nominal),
+                                            style: const TextStyle(
+                                                color: Colors.black87,
+                                                fontWeight: FontWeight.w500),
+                                          ),
+                                          Text(item['deskripsi'] ?? '-',
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                  fontSize: 12)),
+                                          const SizedBox(height: 6),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 8, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color:
+                                                  statusColor.withOpacity(0.1),
+                                              borderRadius:
+                                                  BorderRadius.circular(4),
+                                            ),
+                                            child: Text(
+                                              statusText,
+                                              style: TextStyle(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: statusColor),
+                                            ),
+                                          )
+                                        ],
+                                      ),
+                                      // Switch Konfirmasi Status
+                                      trailing: isRejected
+                                          ? const SizedBox(width: 10)
+                                          : Transform.scale(
+                                              scale: 0.8,
+                                              child: Switch(
+                                                value: isApproved,
+                                                activeColor: Colors.green,
+                                                inactiveThumbColor:
+                                                    Colors.orange,
+                                                inactiveTrackColor:
+                                                    Colors.orange[100],
+                                                onChanged: (val) {
+                                                  // Panggil Bottom Sheet Konfirmasi
+                                                  _showStatusConfirmationSheet(
+                                                      idPinjaman,
+                                                      item['status']);
+                                                },
+                                              ),
+                                            ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
           ),
         ],
       ),

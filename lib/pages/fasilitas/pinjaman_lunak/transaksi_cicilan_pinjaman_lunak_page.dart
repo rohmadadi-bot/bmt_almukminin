@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../../../data/db_helper.dart';
+// UBAH: Pastikan import ini mengarah ke file api_service.dart Anda
+import '../../../services/api_service.dart';
 
 class TransaksiCicilanPinjamanLunakPage extends StatefulWidget {
   const TransaksiCicilanPinjamanLunakPage({super.key});
@@ -13,13 +14,14 @@ class TransaksiCicilanPinjamanLunakPage extends StatefulWidget {
 
 class _TransaksiCicilanPinjamanLunakPageState
     extends State<TransaksiCicilanPinjamanLunakPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
   final NumberFormat _currencyFormatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
   // Data List & Statistik
-  List<Map<String, dynamic>> _riwayatCicilan = [];
-  List<Map<String, dynamic>> _listPeminjamAktif = [];
+  List<dynamic> _riwayatCicilan = [];
+  List<dynamic> _listPeminjamAktif = [];
 
   double _totalPinjamanDisetujui = 0;
   double _totalCicilanMasuk = 0;
@@ -33,32 +35,52 @@ class _TransaksiCicilanPinjamanLunakPageState
     _loadData();
   }
 
-  Future<void> _loadData() async {
-    final riwayat = await _dbHelper.getAllCicilanPinjamanLunak();
-    final summary = await _dbHelper.getSummaryPinjamanLunak();
-    final peminjam = await _dbHelper.getPeminjamAktif();
+  // --- 1. LOAD DATA ---
+  Future<void> _loadData({bool isRefresh = true}) async {
+    if (!isRefresh) {
+      setState(() => _isLoading = true);
+    }
 
-    if (mounted) {
-      setState(() {
-        _riwayatCicilan = riwayat;
-        _totalPinjamanDisetujui = summary['total_pinjaman']!;
-        _totalCicilanMasuk = summary['total_cicilan']!;
-        _sisaUangTerpinjam = _totalPinjamanDisetujui - _totalCicilanMasuk;
-        _listPeminjamAktif = peminjam;
-        _isLoading = false;
-      });
+    try {
+      // 1. Ambil Riwayat & Statistik
+      final result = await _apiService.getTransaksiCicilanPinjaman();
+
+      // 2. Ambil List Peminjam Aktif (Untuk Dropdown)
+      final peminjam = await _apiService.getPeminjamAktif();
+
+      if (mounted) {
+        if (result['status'] == true) {
+          final stats = result['stats'];
+          _riwayatCicilan = result['riwayat'] ?? [];
+          _listPeminjamAktif = peminjam;
+
+          if (stats != null) {
+            _totalPinjamanDisetujui =
+                double.tryParse(stats['total_pinjaman'].toString()) ?? 0;
+            _totalCicilanMasuk =
+                double.tryParse(stats['total_cicilan'].toString()) ?? 0;
+            _sisaUangTerpinjam = _totalPinjamanDisetujui - _totalCicilanMasuk;
+          }
+        }
+        setState(() => _isLoading = false);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  // --- FUNGSI KIRIM WA ---
+  // --- 2. FITUR WA ---
   Future<void> _launchWhatsApp(String phone, String message) async {
     if (phone.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text("Nomor HP tidak tersedia")));
       return;
     }
-    String formattedPhone =
-        phone.startsWith('0') ? "62${phone.substring(1)}" : phone;
+    String formattedPhone = phone.replaceAll(RegExp(r'[^0-9]'), '');
+    if (formattedPhone.startsWith('0'))
+      formattedPhone = "62${formattedPhone.substring(1)}";
+    if (formattedPhone.startsWith('8')) formattedPhone = "62$formattedPhone";
+
     final Uri url = Uri.parse(
         "https://wa.me/$formattedPhone?text=${Uri.encodeComponent(message)}");
 
@@ -74,27 +96,36 @@ class _TransaksiCicilanPinjamanLunakPageState
     }
   }
 
-  // --- FUNGSI HAPUS CICILAN ---
+  // --- 3. HAPUS CICILAN (ONLINE) ---
   Future<void> _hapusCicilan(int id) async {
-    final db = await _dbHelper.database;
-    await db.delete('pinjaman_lunak_cicilan', where: 'id = ?', whereArgs: [id]);
+    bool success = await _apiService.deleteCicilanPinjaman(id);
 
     if (mounted) {
-      Navigator.pop(context); // Tutup Sheet Detail
-      _loadData(); // Refresh List
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Data cicilan berhasil dihapus")));
+      if (success) {
+        Navigator.pop(context); // Tutup Sheet Detail
+        _loadData(isRefresh: true); // Refresh List
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("Data cicilan berhasil dihapus")));
+      } else {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("Gagal menghapus data"),
+            backgroundColor: Colors.red));
+      }
     }
   }
 
-  // --- BOTTOM SHEET DETAIL RIWAYAT ---
+  // --- 4. DETAIL SHEET ---
   void _showDetailCicilanSheet(Map<String, dynamic> item) {
+    int id = int.tryParse(item['id'].toString()) ?? 0;
+    double jumlah = double.tryParse(item['jumlah_bayar'].toString()) ?? 0;
+    int pinjamanId = int.tryParse(item['pinjaman_id'].toString()) ?? 0;
+
     showModalBottomSheet(
       context: context,
-      isScrollControlled: true, // Agar fleksibel
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) {
-        // Bungkus SingleChildScrollView agar aman di layar kecil
         return SingleChildScrollView(
           child: Container(
             padding: const EdgeInsets.all(20),
@@ -105,7 +136,6 @@ class _TransaksiCicilanPinjamanLunakPageState
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Handle
                 Container(
                   width: 40,
                   height: 4,
@@ -114,8 +144,6 @@ class _TransaksiCicilanPinjamanLunakPageState
                       color: Colors.grey[300],
                       borderRadius: BorderRadius.circular(10)),
                 ),
-
-                // Icon
                 const CircleAvatar(
                   radius: 30,
                   backgroundColor: Color(0xFFE8F5E9),
@@ -127,14 +155,10 @@ class _TransaksiCicilanPinjamanLunakPageState
                     style:
                         TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
                 const Divider(height: 30),
-
-                // Detail Items
                 _buildDetailRow("Nama Nasabah", item['nama_nasabah'] ?? '-'),
-                _buildDetailRow("Tanggal", item['tgl_bayar']),
+                _buildDetailRow("Tanggal", item['tgl_bayar'] ?? '-'),
                 _buildDetailRow("Keterangan", item['keterangan'] ?? '-'),
-
                 const SizedBox(height: 10),
-                // Highlight Nominal
                 Container(
                   padding: const EdgeInsets.all(15),
                   width: double.infinity,
@@ -146,7 +170,7 @@ class _TransaksiCicilanPinjamanLunakPageState
                       const Text("Jumlah Masuk",
                           style: TextStyle(fontSize: 12, color: Colors.green)),
                       const SizedBox(height: 5),
-                      Text(_currencyFormatter.format(item['jumlah_bayar']),
+                      Text(_currencyFormatter.format(jumlah),
                           style: const TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 24,
@@ -154,10 +178,7 @@ class _TransaksiCicilanPinjamanLunakPageState
                     ],
                   ),
                 ),
-
                 const SizedBox(height: 30),
-
-                // Tombol Aksi
                 Row(
                   children: [
                     Expanded(
@@ -176,7 +197,7 @@ class _TransaksiCicilanPinjamanLunakPageState
                                       TextButton(
                                           onPressed: () {
                                             Navigator.pop(ctx);
-                                            _hapusCicilan(item['id']);
+                                            _hapusCicilan(id);
                                           },
                                           child: const Text("Hapus",
                                               style: TextStyle(
@@ -198,9 +219,9 @@ class _TransaksiCicilanPinjamanLunakPageState
                     Expanded(
                       child: ElevatedButton.icon(
                         onPressed: () async {
-                          // Ambil Sisa Terbaru untuk pesan WA
-                          double sisaSaatIni = await _dbHelper
-                              .getSisaPinjamanPerId(item['pinjaman_id']);
+                          // Ambil Sisa Terbaru (Online)
+                          double sisaSaatIni =
+                              await _apiService.getSisaPinjaman(pinjamanId);
 
                           String msg = "✅ *BUKTI PEMBAYARAN CICILAN*\n"
                               "🏛 *BMT AL MUKMININ*\n"
@@ -209,7 +230,7 @@ class _TransaksiCicilanPinjamanLunakPageState
                               "Ket     : ${item['keterangan'] ?? '-'}\n"
                               "Tanggal : ${item['tgl_bayar']}\n"
                               "----------------------------------\n"
-                              "💰 *BAYAR : ${_currencyFormatter.format(item['jumlah_bayar'])}*\n"
+                              "💰 *BAYAR : ${_currencyFormatter.format(jumlah)}*\n"
                               "📉 *SISA  : ${_currencyFormatter.format(sisaSaatIni)}*\n"
                               "----------------------------------\n"
                               "Terima kasih.";
@@ -228,8 +249,6 @@ class _TransaksiCicilanPinjamanLunakPageState
                     ),
                   ],
                 ),
-
-                // Tambahan padding bawah aman
                 const SizedBox(height: 20),
               ],
             ),
@@ -239,11 +258,11 @@ class _TransaksiCicilanPinjamanLunakPageState
     );
   }
 
-  // --- BOTTOM SHEET 1: CARI NASABAH ---
-  Future<Map<String, dynamic>?> _showSearchPeminjamSheet() {
-    List<Map<String, dynamic>> filtered = List.from(_listPeminjamAktif);
+  // --- 5. SEARCH NASABAH ---
+  Future<dynamic> _showSearchPeminjamSheet() {
+    List<dynamic> filtered = List.from(_listPeminjamAktif);
 
-    return showModalBottomSheet<Map<String, dynamic>>(
+    return showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -295,6 +314,7 @@ class _TransaksiCicilanPinjamanLunakPageState
                             setStateSheet(() {
                               filtered = _listPeminjamAktif
                                   .where((a) => a['nama_nasabah']
+                                      .toString()
                                       .toLowerCase()
                                       .contains(val.toLowerCase()))
                                   .toList();
@@ -315,12 +335,15 @@ class _TransaksiCicilanPinjamanLunakPageState
                                     const Divider(height: 1),
                                 itemBuilder: (ctx, i) {
                                   final item = filtered[i];
+                                  double nominal = double.tryParse(
+                                          item['nominal'].toString()) ??
+                                      0;
                                   return ListTile(
-                                    title: Text(item['nama_nasabah'],
+                                    title: Text(item['nama_nasabah'] ?? '-',
                                         style: const TextStyle(
                                             fontWeight: FontWeight.bold)),
                                     subtitle: Text(
-                                        "Keperluan: ${item['deskripsi']}\nPinjaman: ${_currencyFormatter.format(item['nominal'])}"),
+                                        "Keperluan: ${item['deskripsi']}\nPinjaman: ${_currencyFormatter.format(nominal)}"),
                                     isThreeLine: true,
                                     onTap: () => Navigator.pop(context, item),
                                   );
@@ -338,7 +361,7 @@ class _TransaksiCicilanPinjamanLunakPageState
     );
   }
 
-  // --- BOTTOM SHEET 2: INPUT CICILAN (PERBAIKAN OVERLOAD) ---
+  // --- 6. INPUT CICILAN ---
   void _showInputCicilanSheet() {
     final formKey = GlobalKey<FormState>();
     final nominalController = TextEditingController();
@@ -350,12 +373,11 @@ class _TransaksiCicilanPinjamanLunakPageState
 
     showModalBottomSheet(
       context: context,
-      isScrollControlled: true, // Wajib true agar resize saat keyboard muncul
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateSheet) {
           return Padding(
-            // Padding bawah mengikuti keyboard
             padding: EdgeInsets.only(
                 bottom: MediaQuery.of(context).viewInsets.bottom),
             child: Container(
@@ -364,11 +386,9 @@ class _TransaksiCicilanPinjamanLunakPageState
                 borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
               ),
               child: SingleChildScrollView(
-                // Bungkus semua konten agar bisa discroll
                 child: Column(
-                  mainAxisSize: MainAxisSize.min, // Sesuaikan tinggi konten
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    // Header
                     Container(
                       padding: const EdgeInsets.all(20),
                       decoration: const BoxDecoration(
@@ -400,8 +420,6 @@ class _TransaksiCicilanPinjamanLunakPageState
                         ],
                       ),
                     ),
-
-                    // Form Content
                     Padding(
                       padding: const EdgeInsets.all(20),
                       child: Form(
@@ -413,7 +431,8 @@ class _TransaksiCicilanPinjamanLunakPageState
                                 final result = await _showSearchPeminjamSheet();
                                 if (result != null) {
                                   setStateSheet(() {
-                                    selectedPeminjam = result;
+                                    selectedPeminjam =
+                                        Map<String, dynamic>.from(result);
                                     namaTampil = result['nama_nasabah'];
                                   });
                                 }
@@ -444,8 +463,7 @@ class _TransaksiCicilanPinjamanLunakPageState
                             TextFormField(
                               controller: nominalController,
                               keyboardType: TextInputType.number,
-                              autofocus:
-                                  true, // Fokus agar keyboard langsung muncul
+                              autofocus: true,
                               style: const TextStyle(
                                   fontSize: 24, fontWeight: FontWeight.bold),
                               decoration: InputDecoration(
@@ -473,8 +491,6 @@ class _TransaksiCicilanPinjamanLunakPageState
                         ),
                       ),
                     ),
-
-                    // Tombol Simpan
                     Container(
                       padding: const EdgeInsets.all(20),
                       decoration:
@@ -499,33 +515,47 @@ class _TransaksiCicilanPinjamanLunakPageState
                                   .text
                                   .replaceAll('.', '')
                                   .replaceAll(',', ''));
-                              String tglDB = DateFormat('dd/MM/yyyy HH:mm')
+                              String tglDB = DateFormat('yyyy-MM-dd')
                                   .format(DateTime.now());
+                              int pinjamanId = int.tryParse(
+                                      selectedPeminjam!['id'].toString()) ??
+                                  0;
 
-                              await _dbHelper.insertCicilanPinjamanLunak({
-                                'pinjaman_id': selectedPeminjam!['id'],
+                              final response =
+                                  await _apiService.insertCicilanPinjaman({
+                                'pinjaman_id': pinjamanId,
                                 'tgl_bayar': tglDB,
                                 'jumlah_bayar': nominal,
                                 'keterangan': ketController.text,
                               });
 
-                              double sisaTerbaru =
-                                  await _dbHelper.getSisaPinjamanPerId(
-                                      selectedPeminjam!['id']);
-
                               if (mounted) {
-                                Navigator.pop(context); // Tutup Sheet Input
-                                _loadData(); // Refresh Data
+                                if (response['status'] == true) {
+                                  double sisaTerbaru = double.tryParse(
+                                          response['sisa_terbaru']
+                                              .toString()) ??
+                                      0;
 
-                                // Buka Sheet Sukses
-                                _showSuccessSheet(
-                                  nama: selectedPeminjam!['nama_nasabah'],
-                                  barang: selectedPeminjam!['deskripsi'],
-                                  nominal: nominal,
-                                  sisa: sisaTerbaru,
-                                  telepon: selectedPeminjam!['telepon'],
-                                  tgl: tglDB,
-                                );
+                                  Navigator.pop(context); // Tutup Sheet Input
+                                  _loadData(
+                                      isRefresh:
+                                          true); // Refresh Data Dashboard
+
+                                  _showSuccessSheet(
+                                    nama: selectedPeminjam!['nama_nasabah'],
+                                    barang: selectedPeminjam!['deskripsi'],
+                                    nominal: nominal,
+                                    sisa: sisaTerbaru,
+                                    telepon: selectedPeminjam!['telepon'],
+                                    tgl: DateFormat('dd MMM yyyy')
+                                        .format(DateTime.now()),
+                                  );
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                          content: Text("Gagal Simpan Data"),
+                                          backgroundColor: Colors.red));
+                                }
                               }
                             }
                           },
@@ -547,7 +577,7 @@ class _TransaksiCicilanPinjamanLunakPageState
     );
   }
 
-  // --- BOTTOM SHEET 3: SUKSES ---
+  // --- 7. SUKSES SHEET ---
   void _showSuccessSheet({
     required String nama,
     required String barang,
@@ -683,6 +713,21 @@ class _TransaksiCicilanPinjamanLunakPageState
     );
   }
 
+  Widget _buildSummaryItem(String label, double value) {
+    return Column(
+      children: [
+        Text(label,
+            style: const TextStyle(color: Colors.white70, fontSize: 12)),
+        const SizedBox(height: 4),
+        Text(
+          _currencyFormatter.format(value),
+          style: const TextStyle(
+              color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -694,7 +739,7 @@ class _TransaksiCicilanPinjamanLunakPageState
       ),
       body: Column(
         children: [
-          // --- HEADER SUMMARY ---
+          // HEADER SUMMARY
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(20),
@@ -744,67 +789,86 @@ class _TransaksiCicilanPinjamanLunakPageState
           ),
           const SizedBox(height: 10),
 
-          // --- LIST RIWAYAT ---
+          // LIST RIWAYAT
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : _riwayatCicilan.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.history,
-                                size: 60, color: Colors.grey[300]),
-                            const SizedBox(height: 10),
-                            const Text("Belum ada transaksi cicilan",
-                                style: TextStyle(color: Colors.grey)),
-                          ],
-                        ),
-                      )
-                    : ListView.separated(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 8),
-                        itemCount: _riwayatCicilan.length,
-                        separatorBuilder: (ctx, i) =>
-                            const SizedBox(height: 10),
-                        itemBuilder: (context, index) {
-                          final item = _riwayatCicilan[index];
-                          return Card(
-                            elevation: 2,
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12)),
-                            child: ListTile(
-                              onTap: () => _showDetailCicilanSheet(
-                                  item), // BUKA DETAIL SAAT KLIK LIST
-                              leading: CircleAvatar(
-                                backgroundColor: Colors.blue[50],
-                                child: const Icon(Icons.download,
-                                    color: Colors.blue),
+                : RefreshIndicator(
+                    onRefresh: () async => await _loadData(isRefresh: true),
+                    child: _riwayatCicilan.isEmpty
+                        ? ListView(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            children: [
+                              SizedBox(
+                                  height:
+                                      MediaQuery.of(context).size.height * 0.2),
+                              Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.history,
+                                        size: 60, color: Colors.grey[300]),
+                                    const SizedBox(height: 10),
+                                    const Text("Belum ada transaksi cicilan",
+                                        style: TextStyle(color: Colors.grey)),
+                                  ],
+                                ),
                               ),
-                              title: Text(
-                                item['nama_nasabah'] ?? 'Tanpa Nama',
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold),
-                              ),
-                              subtitle: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(item['tgl_bayar']),
-                                  Text(item['keterangan'] ?? '-',
-                                      style: const TextStyle(
-                                          fontSize: 12, color: Colors.grey)),
-                                ],
-                              ),
-                              trailing: Text(
-                                _currencyFormatter.format(item['jumlah_bayar']),
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.green),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
+                            ],
+                          )
+                        : ListView.separated(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 8),
+                            itemCount: _riwayatCicilan.length,
+                            separatorBuilder: (ctx, i) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (context, index) {
+                              final item = _riwayatCicilan[index];
+                              // Parsing Aman
+                              double jumlah = double.tryParse(
+                                      item['jumlah_bayar'].toString()) ??
+                                  0;
+
+                              return Card(
+                                elevation: 2,
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12)),
+                                child: ListTile(
+                                  onTap: () => _showDetailCicilanSheet(
+                                      item), // BUKA DETAIL SAAT KLIK LIST
+                                  leading: CircleAvatar(
+                                    backgroundColor: Colors.blue[50],
+                                    child: const Icon(Icons.download,
+                                        color: Colors.blue),
+                                  ),
+                                  title: Text(
+                                    item['nama_nasabah'] ?? 'Tanpa Nama',
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.bold),
+                                  ),
+                                  subtitle: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(item['tgl_bayar'] ?? '-'),
+                                      Text(item['keterangan'] ?? '-',
+                                          style: const TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.grey)),
+                                    ],
+                                  ),
+                                  trailing: Text(
+                                    _currencyFormatter.format(jumlah),
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.green),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
           ),
         ],
       ),
@@ -815,21 +879,6 @@ class _TransaksiCicilanPinjamanLunakPageState
         label: const Text("Tambah Cicilan",
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
       ),
-    );
-  }
-
-  Widget _buildSummaryItem(String label, double value) {
-    return Column(
-      children: [
-        Text(label,
-            style: const TextStyle(color: Colors.white70, fontSize: 12)),
-        const SizedBox(height: 4),
-        Text(
-          _currencyFormatter.format(value),
-          style: const TextStyle(
-              color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
-        ),
-      ],
     );
   }
 }

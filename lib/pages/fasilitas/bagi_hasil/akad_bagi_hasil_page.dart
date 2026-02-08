@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
-import '../../../data/db_helper.dart';
+// import 'package:intl/intl.dart'; (ditiadakan)
+// UBAH: Gunakan ApiService
+import '../../../services/api_service.dart';
 
 class AkadBagiHasilPage extends StatefulWidget {
   final Map<String, dynamic> akadData;
@@ -11,12 +13,13 @@ class AkadBagiHasilPage extends StatefulWidget {
 }
 
 class _AkadBagiHasilPageState extends State<AkadBagiHasilPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // UBAH: Inisialisasi ApiService
+  final ApiService _apiService = ApiService();
   final _formKey = GlobalKey<FormState>();
 
   // Status Mode Edit
   bool _isEditing = false;
-  late String _currentStatus; // Variabel untuk melacak status saat ini
+  late String _currentStatus;
 
   // Controllers
   late TextEditingController _namaUsahaController;
@@ -42,20 +45,23 @@ class _AkadBagiHasilPageState extends State<AkadBagiHasilPage> {
     _resetForm(); // Load data awal
   }
 
-  // Fungsi untuk me-reset form ke data asli (saat Batal atau Init)
+  // --- RESET FORM (LOAD DATA) ---
   void _resetForm() {
     _namaUsahaController =
         TextEditingController(text: widget.akadData['nama_usaha']);
     _deskripsiController =
         TextEditingController(text: widget.akadData['deskripsi_usaha']);
 
-    double modal = (widget.akadData['nominal_modal'] as num?)?.toDouble() ?? 0;
+    // Parsing Angka
+    double modal =
+        double.tryParse(widget.akadData['nominal_modal'].toString()) ?? 0;
     _modalController =
         TextEditingController(text: modal > 0 ? modal.toStringAsFixed(0) : '');
 
     double nNasabah =
-        (widget.akadData['nisbah_nasabah'] as num?)?.toDouble() ?? 60;
-    double nBmt = (widget.akadData['nisbah_bmt'] as num?)?.toDouble() ?? 40;
+        double.tryParse(widget.akadData['nisbah_nasabah'].toString()) ?? 60;
+    double nBmt =
+        double.tryParse(widget.akadData['nisbah_bmt'].toString()) ?? 40;
 
     String dbNisbah = "${nNasabah.toInt()} : ${nBmt.toInt()}";
 
@@ -65,66 +71,94 @@ class _AkadBagiHasilPageState extends State<AkadBagiHasilPage> {
       _selectedNisbah = '60 : 40';
     }
 
-    // Pastikan UI di-refresh
     if (mounted) setState(() {});
   }
 
-  // Fungsi Simpan Perubahan Teks (Tombol Bawah)
+// --- SIMPAN PERUBAHAN DATA (ONLINE) ---
   Future<void> _simpanPerubahan() async {
     if (_formKey.currentState!.validate()) {
+      // 1. Parsing Data (Variabel ini sekarang AKAN DIGUNAKAN)
       List<String> parts = _selectedNisbah!.split(' : ');
       double nN = double.parse(parts[0]);
       double nB = double.parse(parts[1]);
 
-      await _dbHelper.updateAkadMudharabah(widget.akadData['id'], {
+      // Bersihkan format uang (hapus titik/koma)
+      double modal = double.tryParse(
+              _modalController.text.replaceAll('.', '').replaceAll(',', '')) ??
+          0;
+
+      int id = int.tryParse(widget.akadData['id'].toString()) ?? 0;
+
+      // 2. Tampilkan Loading (Optional tapi bagus UX-nya)
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Menyimpan perubahan...")),
+      );
+
+      // 3. Panggil API Update
+      bool success = await _apiService.updateDataAkadBagiHasil({
+        'id': id,
         'nama_usaha': _namaUsahaController.text,
         'deskripsi_usaha': _deskripsiController.text,
-        'nominal_modal': double.parse(
-            _modalController.text.replaceAll('.', '').replaceAll(',', '')),
+        'nominal_modal': modal,
         'nisbah_nasabah': nN,
         'nisbah_bmt': nB,
-        // Status tidak diubah di sini, tapi di tombol status
       });
 
+      // 4. Cek Hasil
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Perubahan data berhasil disimpan!"),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-
-        setState(() {
-          _isEditing = false;
-        });
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Perubahan data berhasil disimpan ke Server!"),
+              backgroundColor: Colors.green,
+            ),
+          );
+          setState(() {
+            _isEditing = false;
+          });
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Gagal menyimpan perubahan. Cek koneksi."),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       }
     }
   }
 
-  // Fungsi Khusus Update Status (Tombol Grid)
+  // --- UPDATE STATUS (ONLINE) ---
   Future<void> _updateStatusOnly(String newStatus) async {
-    // Update hanya status di database
-    await _dbHelper
-        .updateAkadMudharabah(widget.akadData['id'], {'status': newStatus});
+    int id = int.tryParse(widget.akadData['id'].toString()) ?? 0;
 
-    setState(() {
-      _currentStatus = newStatus;
-    });
+    // Panggil API
+    bool success = await _apiService.updateStatusAkadBagiHasil(id, newStatus);
 
     if (mounted) {
-      Color snackColor = Colors.orange;
-      if (newStatus == 'Disetujui') snackColor = Colors.green;
-      if (newStatus == 'Ditolak') snackColor = Colors.red;
-      if (newStatus == 'Selesai') snackColor = Colors.blueGrey;
+      if (success) {
+        setState(() {
+          _currentStatus = newStatus;
+        });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Status berhasil diubah menjadi: $newStatus"),
-          backgroundColor: snackColor,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+        Color snackColor = Colors.orange;
+        if (newStatus == 'Disetujui') snackColor = Colors.green;
+        if (newStatus == 'Ditolak') snackColor = Colors.red;
+        if (newStatus == 'Selesai') snackColor = Colors.blueGrey;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Status berhasil diubah menjadi: $newStatus"),
+            backgroundColor: snackColor,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text("Gagal update status"),
+              backgroundColor: Colors.red),
+        );
+      }
     }
   }
 
@@ -157,7 +191,7 @@ class _AkadBagiHasilPageState extends State<AkadBagiHasilPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // HEADER STATUS MODE EDIT
+              // HEADER STATUS
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
@@ -321,7 +355,7 @@ class _AkadBagiHasilPageState extends State<AkadBagiHasilPage> {
 
               const SizedBox(height: 24),
 
-              // --- 4 TOMBOL STATUS (DITAMBAHKAN DI SINI) ---
+              // --- TOMBOL UPDATE STATUS (GRID) ---
               _buildSectionTitle("Update Status Akad"),
               Container(
                 padding: const EdgeInsets.all(12),
@@ -358,13 +392,13 @@ class _AkadBagiHasilPageState extends State<AkadBagiHasilPage> {
                 ),
               ),
 
-              const SizedBox(height: 100), // Spasi bawah
+              const SizedBox(height: 100),
             ],
           ),
         ),
       ),
 
-      // TOMBOL AKSI UTAMA (TIDAK DIRUBAH)
+      // TOMBOL AKSI UTAMA (SIMPAN/EDIT)
       bottomNavigationBar: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
@@ -408,7 +442,7 @@ class _AkadBagiHasilPageState extends State<AkadBagiHasilPage> {
     );
   }
 
-  // Widget Helper Tombol Status
+  // --- WIDGET HELPER ---
   Widget _buildStatusBtn(String status, Color color, IconData icon) {
     bool isActive = _currentStatus == status;
     return InkWell(
@@ -435,7 +469,6 @@ class _AkadBagiHasilPageState extends State<AkadBagiHasilPage> {
     );
   }
 
-  // --- WIDGET HELPERS LAINNYA ---
   Widget _buildTextField({
     required TextEditingController controller,
     required String label,
