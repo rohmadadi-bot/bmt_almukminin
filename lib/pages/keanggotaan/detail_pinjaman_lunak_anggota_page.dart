@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../data/db_helper.dart';
+import '../../services/api_service.dart'; // Ganti DbHelper dengan ApiService
 
 class DetailPinjamanLunakAnggotaPage extends StatefulWidget {
   final int nasabahId;
@@ -13,11 +13,13 @@ class DetailPinjamanLunakAnggotaPage extends StatefulWidget {
 
 class _DetailPinjamanLunakAnggotaPageState
     extends State<DetailPinjamanLunakAnggotaPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // 1. Inisialisasi API Service
+  final ApiService _apiService = ApiService();
+
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _dataPinjaman = [];
+  List<dynamic> _dataPinjaman = []; // Ubah ke dynamic
   bool _isLoading = true;
 
   // Variabel Header Statistik
@@ -31,62 +33,86 @@ class _DetailPinjamanLunakAnggotaPageState
     _loadData();
   }
 
+  // --- 2. LOAD DATA DARI API ---
   Future<void> _loadData() async {
     setState(() {
       _isLoading = true;
       _totalPinjamanDisalurkan = 0;
       _totalCicilanMasuk = 0;
       _totalSisaTagihan = 0;
+      _dataPinjaman = [];
     });
 
     try {
-      final db = await _dbHelper.database;
+      // Ambil semua data pinjaman
+      final response = await _apiService.getPinjamanLunak();
 
-      // 1. Ambil Data Pinjaman berdasarkan Nasabah
-      final List<Map<String, dynamic>> pinjamanList = await db.query(
-        'pinjaman_lunak',
-        where: 'nasabah_id = ?',
-        whereArgs: [widget.nasabahId],
-        orderBy: 'id DESC',
-      );
+      if (response['status'] == true && response['data'] is List) {
+        List<dynamic> allPinjaman = response['data'];
 
-      List<Map<String, dynamic>> processedList = [];
-      double tempTotalPinjaman = 0;
-      double tempTotalCicilan = 0;
+        // Filter milik nasabah ini saja
+        List<dynamic> myPinjaman = allPinjaman
+            .where((item) =>
+                item['nasabah_id'].toString() == widget.nasabahId.toString())
+            .toList();
 
-      // 2. Loop untuk hitung sisa per akad dan total statistik
-      for (var p in pinjamanList) {
-        // Ambil total yang sudah dibayar di tabel cicilan
-        var resBayar = await db.rawQuery(
-            "SELECT SUM(jumlah_bayar) as total FROM pinjaman_lunak_cicilan WHERE pinjaman_id = ?",
-            [p['id']]);
+        List<Map<String, dynamic>> processedList = [];
+        double tempTotalPinjaman = 0;
+        double tempTotalCicilan = 0;
 
-        double nominal = (p['nominal'] as num?)?.toDouble() ?? 0.0;
-        double sudahBayar =
-            (resBayar.first['total'] as num?)?.toDouble() ?? 0.0;
-        double sisa = nominal - sudahBayar;
+        for (var p in myPinjaman) {
+          // Parsing aman (String to Double)
+          double nominal = double.tryParse(p['nominal'].toString()) ?? 0.0;
 
-        // Update Statistik Header (Hanya yg Disetujui/Lunas)
-        if (p['status'] == 'Disetujui' || p['status'] == 'Lunas') {
-          tempTotalPinjaman += nominal;
-          tempTotalCicilan += sudahBayar;
+          // Cek apakah API kirim 'sisa_pinjaman' atau 'terbayar'
+          double sisa = 0;
+          double sudahBayar = 0;
+
+          if (p['sisa_pinjaman'] != null) {
+            sisa = double.tryParse(p['sisa_pinjaman'].toString()) ?? 0.0;
+            sudahBayar = nominal - sisa;
+          } else if (p['terbayar'] != null) {
+            sudahBayar = double.tryParse(p['terbayar'].toString()) ?? 0.0;
+            sisa = nominal - sudahBayar;
+          } else {
+            // Fallback jika API belum kirim perhitungan
+            // Asumsi sisa = nominal (belum bayar) kecuali status Lunas
+            if (p['status'] == 'Lunas') {
+              sisa = 0;
+              sudahBayar = nominal;
+            } else {
+              sisa = nominal;
+            }
+          }
+
+          String status = p['status'] ?? 'Pengajuan';
+
+          // Update Statistik Header (Hanya yg Disetujui/Lunas)
+          if (status == 'Disetujui' || status == 'Lunas') {
+            tempTotalPinjaman += nominal;
+            tempTotalCicilan += sudahBayar;
+          }
+
+          // Buat item baru untuk List
+          var newItem = Map<String, dynamic>.from(p);
+          newItem['sisa'] = sisa;
+          newItem['sudah_bayar'] = sudahBayar;
+          newItem['nominal_angka'] = nominal; // Simpan versi double
+
+          processedList.add(newItem);
         }
 
-        var newItem = Map<String, dynamic>.from(p);
-        newItem['sisa'] = sisa;
-        newItem['sudah_bayar'] = sudahBayar;
-        processedList.add(newItem);
-      }
-
-      if (mounted) {
-        setState(() {
-          _dataPinjaman = processedList;
-          _totalPinjamanDisalurkan = tempTotalPinjaman;
-          _totalCicilanMasuk = tempTotalCicilan;
-          // Hitung Sisa Tagihan Global
-          _totalSisaTagihan = tempTotalPinjaman - tempTotalCicilan;
-          _isLoading = false;
-        });
+        if (mounted) {
+          setState(() {
+            _dataPinjaman = processedList;
+            _totalPinjamanDisalurkan = tempTotalPinjaman;
+            _totalCicilanMasuk = tempTotalCicilan;
+            _totalSisaTagihan = tempTotalPinjaman - tempTotalCicilan;
+            _isLoading = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoading = false);
       }
     } catch (e) {
       debugPrint("Error load data pinjaman: $e");
@@ -94,16 +120,13 @@ class _DetailPinjamanLunakAnggotaPageState
     }
   }
 
-  // --- SHOW RIWAYAT CICILAN (BOTTOM SHEET) ---
+  // --- 3. SHOW RIWAYAT CICILAN (API VERSION) ---
   void _showRiwayatCicilan(Map<String, dynamic> pinjaman) async {
     try {
-      final db = await _dbHelper.database;
-      final riwayat = await db.query(
-        'pinjaman_lunak_cicilan',
-        where: 'pinjaman_id = ?',
-        whereArgs: [pinjaman['id']],
-        orderBy: 'id DESC',
-      );
+      int pinjamanId = int.parse(pinjaman['id'].toString());
+
+      // Panggil fungsi baru di ApiService
+      final riwayat = await _apiService.getRiwayatCicilanPinjaman(pinjamanId);
 
       if (!mounted) return;
 
@@ -151,7 +174,7 @@ class _DetailPinjamanLunakAnggotaPageState
                                   fontWeight: FontWeight.bold, fontSize: 18)),
                           const SizedBox(height: 4),
                           Text(
-                              "Total Pinjaman: ${_formatter.format(pinjaman['nominal'])}",
+                              "Total Pinjaman: ${_formatter.format(pinjaman['nominal_angka'] ?? 0)}",
                               style: const TextStyle(
                                   fontSize: 14, color: Colors.orange)),
                         ],
@@ -181,16 +204,13 @@ class _DetailPinjamanLunakAnggotaPageState
                                   const Divider(height: 1),
                               itemBuilder: (ctx, i) {
                                 final item = riwayat[i];
-                                double bayar = (item['jumlah_bayar'] as num?)
-                                        ?.toDouble() ??
-                                    0.0;
 
-                                String tgl = item['tgl_bayar'] != null
-                                    ? item['tgl_bayar'].toString()
-                                    : '-';
-                                String ket = item['keterangan'] != null
-                                    ? item['keterangan'].toString()
-                                    : '-';
+                                // Parsing Data
+                                double bayar = double.tryParse(
+                                        item['jumlah_bayar'].toString()) ??
+                                    0.0;
+                                String tgl = item['tgl_bayar'] ?? '-';
+                                String ket = item['keterangan'] ?? '-';
 
                                 return ListTile(
                                   contentPadding: const EdgeInsets.symmetric(
@@ -247,6 +267,7 @@ class _DetailPinjamanLunakAnggotaPageState
         },
       );
     } catch (e) {
+      debugPrint("Error detail cicilan: $e");
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Gagal memuat riwayat cicilan")),
       );
@@ -380,8 +401,9 @@ class _DetailPinjamanLunakAnggotaPageState
                               const SizedBox(height: 10),
                           itemBuilder: (context, index) {
                             final item = _dataPinjaman[index];
+
                             double nominal =
-                                (item['nominal'] as num?)?.toDouble() ?? 0.0;
+                                item['nominal_angka']; // Pakai versi double
                             double sisa = item['sisa'];
                             String status = item['status'] ?? 'Pengajuan';
 

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../data/db_helper.dart';
+import '../../services/api_service.dart'; // Ganti DbHelper dengan ApiService
 
 class DetailUsahaBersamaAnggotaPage extends StatefulWidget {
   final int nasabahId;
@@ -16,7 +16,9 @@ class DetailUsahaBersamaAnggotaPage extends StatefulWidget {
 
 class _DetailUsahaBersamaAnggotaPageState
     extends State<DetailUsahaBersamaAnggotaPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // 1. Inisialisasi API Service
+  final ApiService _apiService = ApiService();
+
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
@@ -27,43 +29,81 @@ class _DetailUsahaBersamaAnggotaPageState
   double _totalInvestasi = 0;
   double _totalKeuntunganDiterima = 0;
 
+  // Cache riwayat wadiah untuk efisiensi
+  List<dynamic> _riwayatWadiahCache = [];
+
   @override
   void initState() {
     super.initState();
     _loadData();
   }
 
+  // --- 2. LOAD DATA DARI API ---
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
+
+    // Reset
+    double tempInvestasi = 0;
+    double tempKeuntungan = 0;
+    List<Map<String, dynamic>> tempPortofolio = [];
+
     try {
-      final db = await _dbHelper.database;
+      // A. AMBIL DATA MODAL (PORTOFOLIO)
+      // Strategi: Ambil Semua Usaha -> Cek Modal di tiap usaha
+      final List<dynamic> allUsaha = await _apiService.getUsahaBersama();
 
-      // 1. Ambil Portofolio Investasi (Modal yang disetor)
-      final List<Map<String, dynamic>> portofolio = await db.rawQuery('''
-        SELECT m.jumlah_modal, m.tgl_setor, u.nama_usaha, u.jenis_usaha, u.id as usaha_id
-        FROM usaha_modal m
-        JOIN usaha_bersama u ON m.usaha_id = u.id
-        WHERE LOWER(m.nama_pemodal) LIKE LOWER(?)
-      ''', ['%${widget.namaNasabah}%']);
+      for (var usaha in allUsaha) {
+        int usahaId = int.parse(usaha['id'].toString());
 
-      double tempInvestasi = 0;
-      for (var p in portofolio) {
-        tempInvestasi += (p['jumlah_modal'] as num?)?.toDouble() ?? 0.0;
+        // Ambil daftar pemodal di usaha ini
+        final List<dynamic> pemodalList =
+            await _apiService.getModalUsaha(usahaId);
+
+        // Cek apakah nasabah ini ada di daftar pemodal (Match by Nama)
+        // Note: Idealnya match by ID, tapi struktur lama pakai Nama
+        var myModal = pemodalList.where((p) =>
+            p['nama_pemodal'].toString().toLowerCase() ==
+            widget.namaNasabah.toLowerCase());
+
+        for (var m in myModal) {
+          double jumlahModal =
+              double.tryParse(m['jumlah_modal'].toString()) ?? 0;
+          tempInvestasi += jumlahModal;
+
+          tempPortofolio.add({
+            'nama_usaha': usaha['nama_usaha'],
+            'jenis_usaha': usaha['jenis_usaha'],
+            'jumlah_modal': jumlahModal,
+            'usaha_id': usahaId
+          });
+        }
       }
 
-      // 2. Hitung Total Keuntungan (Dari Tabel Transaksi Wadiah)
-      final resKeuntungan = await db.rawQuery('''
-        SELECT SUM(jumlah) as total 
-        FROM transaksi_wadiah 
-        WHERE nasabah_id = ? AND keterangan LIKE 'Bagi Hasil Otomatis:%'
-      ''', [widget.nasabahId]);
+      // B. AMBIL DATA KEUNTUNGAN (DARI RIWAYAT WADIAH)
+      // Ambil riwayat wadiah nasabah ini
+      final wadiahResponse = await _apiService.getWadiah(widget.nasabahId);
+      if (wadiahResponse['status'] == true && wadiahResponse['data'] != null) {
+        _riwayatWadiahCache =
+            wadiahResponse['data']; // Simpan untuk popup nanti
 
-      double tempKeuntungan =
-          (resKeuntungan.first['total'] as num?)?.toDouble() ?? 0.0;
+        for (var t in _riwayatWadiahCache) {
+          String ket = t['keterangan'] ?? '';
+          // Filter transaksi yang merupakan Bagi Hasil Otomatis
+          // Sesuaikan dengan format keterangan di PHP Anda
+          if (ket.toLowerCase().contains('bagi hasil')) {
+            double nominal = double.tryParse(t['jumlah'].toString()) ?? 0;
+            // Cek jenis transaksi (harus Setoran/Masuk)
+            String jenis = t['jenis'] ?? '';
+            if (jenis == 'Setoran' || jenis == 'Bagi Hasil') {
+              tempKeuntungan += nominal;
+            }
+          }
+        }
+      }
 
       if (mounted) {
         setState(() {
-          _dataPortofolio = portofolio;
+          _dataPortofolio = tempPortofolio;
           _totalInvestasi = tempInvestasi;
           _totalKeuntunganDiterima = tempKeuntungan;
           _isLoading = false;
@@ -75,20 +115,16 @@ class _DetailUsahaBersamaAnggotaPageState
     }
   }
 
-  // --- SHOW RIWAYAT BAGI HASIL PER USAHA (BOTTOM SHEET) ---
-  void _showRiwayatBagiHasil(String namaUsaha) async {
+  // --- 3. SHOW RIWAYAT BAGI HASIL (FILTER DARI CACHE) ---
+  void _showRiwayatBagiHasil(String namaUsaha) {
     try {
-      final db = await _dbHelper.database;
-
-      // Cari transaksi wadiah yang spesifik untuk usaha ini
-      final riwayat = await db.query(
-        'transaksi_wadiah',
-        where: 'nasabah_id = ? AND keterangan LIKE ?',
-        whereArgs: [widget.nasabahId, '%$namaUsaha%'],
-        orderBy: 'id DESC',
-      );
-
-      if (!mounted) return;
+      // Filter dari cache _riwayatWadiahCache yang sudah diambil di awal
+      // Cari yang keterangannya mengandung nama usaha tersebut
+      final riwayat = _riwayatWadiahCache.where((item) {
+        String ket = (item['keterangan'] ?? '').toString().toLowerCase();
+        return ket.contains(namaUsaha.toLowerCase()) &&
+            ket.contains('bagi hasil');
+      }).toList();
 
       showModalBottomSheet(
         context: context,
@@ -159,19 +195,11 @@ class _DetailUsahaBersamaAnggotaPageState
                                   const Divider(height: 1),
                               itemBuilder: (ctx, i) {
                                 final item = riwayat[i];
-                                double nominal =
-                                    (item['jumlah'] as num?)?.toDouble() ?? 0.0;
-
-                                // --- PERBAIKAN DI SINI (SOLUSI ERROR) ---
-                                // Gunakan .toString() untuk memastikan data aman
-                                String tgl = item['tgl_transaksi'] != null
-                                    ? item['tgl_transaksi'].toString()
-                                    : '-';
-                                // ----------------------------------------
-
-                                String ket = (item['keterangan'] ?? '-')
-                                    .toString()
-                                    .replaceAll('Bagi Hasil Otomatis: ', '');
+                                double nominal = double.tryParse(
+                                        item['jumlah'].toString()) ??
+                                    0;
+                                String tgl = item['tgl_transaksi'] ?? '-';
+                                String ket = item['keterangan'] ?? '-';
 
                                 return ListTile(
                                   contentPadding: const EdgeInsets.symmetric(
@@ -232,7 +260,7 @@ class _DetailUsahaBersamaAnggotaPageState
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Gagal memuat riwayat bagi hasil")),
+        const SnackBar(content: Text("Gagal memuat riwayat")),
       );
     }
   }
@@ -251,7 +279,7 @@ class _DetailUsahaBersamaAnggotaPageState
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
-                // --- 1. HEADER SUMMARY (TEAL) ---
+                // --- HEADER SUMMARY ---
                 Container(
                   padding: const EdgeInsets.fromLTRB(20, 10, 20, 25),
                   decoration: const BoxDecoration(
@@ -324,7 +352,7 @@ class _DetailUsahaBersamaAnggotaPageState
                 ),
                 const SizedBox(height: 5),
 
-                // --- 2. LIST PORTOFOLIO ---
+                // --- LIST PORTOFOLIO ---
                 Expanded(
                   child: _dataPortofolio.isEmpty
                       ? const Center(

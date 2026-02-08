@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../data/db_helper.dart';
+import '../../services/api_service.dart'; // Ganti DbHelper dengan ApiService
 
 class DetailJualBeliAnggotaPage extends StatefulWidget {
   final int nasabahId;
@@ -12,11 +12,13 @@ class DetailJualBeliAnggotaPage extends StatefulWidget {
 }
 
 class _DetailJualBeliAnggotaPageState extends State<DetailJualBeliAnggotaPage> {
-  final DbHelper _dbHelper = DbHelper();
+  // 1. Inisialisasi API Service
+  final ApiService _apiService = ApiService();
+
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _listAkad = [];
+  List<dynamic> _listAkad = []; // Ubah ke List<dynamic>
   bool _isLoading = true;
 
   // Variabel Header Summary
@@ -31,8 +33,8 @@ class _DetailJualBeliAnggotaPageState extends State<DetailJualBeliAnggotaPage> {
     _loadData();
   }
 
+  // --- 2. LOAD DATA DARI API ---
   Future<void> _loadData() async {
-    // Reset variabel sebelum load
     setState(() {
       _isLoading = true;
       _totalSisaKewajiban = 0;
@@ -43,15 +45,14 @@ class _DetailJualBeliAnggotaPageState extends State<DetailJualBeliAnggotaPage> {
     });
 
     try {
-      final db = await _dbHelper.database;
+      // Ambil semua data akad jual beli dari server
+      final List<dynamic> allAkad = await _apiService.getAkadJualBeli();
 
-      // 1. Ambil semua akad milik nasabah ini
-      final List<Map<String, dynamic>> akadList = await db.query(
-        'murabahah_akad',
-        where: 'nasabah_id = ?',
-        whereArgs: [widget.nasabahId],
-        orderBy: 'id DESC',
-      );
+      // Filter hanya milik nasabah ini
+      final List<dynamic> myAkad = allAkad
+          .where((item) =>
+              item['nasabah_id'].toString() == widget.nasabahId.toString())
+          .toList();
 
       List<Map<String, dynamic>> processedList = [];
       double tempTotalSisa = 0;
@@ -59,41 +60,59 @@ class _DetailJualBeliAnggotaPageState extends State<DetailJualBeliAnggotaPage> {
       int tempBelum = 0;
       int tempLunas = 0;
 
-      // 2. Loop data dengan Pengaman Error
-      for (var akad in akadList) {
+      for (var akad in myAkad) {
         try {
-          var resBayar = await db.rawQuery(
-              "SELECT SUM(jumlah_bayar) as total FROM murabah_angsuran WHERE akad_id = ?",
-              [akad['id']]);
-
-          double totalPiutang =
-              (akad['total_piutang'] as num?)?.toDouble() ?? 0.0;
-          double sudahBayar =
-              (resBayar.first['total'] as num?)?.toDouble() ?? 0.0;
+          // Parsing data angka dengan aman
+          double totalPiutang = double.parse(akad['total_piutang'].toString());
           double angsuranPerBulan =
-              (akad['angsuran_bulanan'] as num?)?.toDouble() ?? 0.0;
+              double.parse(akad['angsuran_bulanan'].toString());
 
-          double sisa = totalPiutang - sudahBayar;
+          // Cek apakah API mengirimkan 'sisa_piutang' atau 'sudah_bayar'
+          // Jika belum ada, kita estimasi dari Status atau hitungan manual jika ada fieldnya
+          double sudahBayar = 0;
+          double sisa = totalPiutang;
 
-          bool isLunas = sisa <= 100;
-          if (isLunas) {
-            tempLunas++;
-            sisa = 0;
+          if (akad['sudah_bayar'] != null) {
+            sudahBayar = double.parse(akad['sudah_bayar'].toString());
+            sisa = totalPiutang - sudahBayar;
+          } else if (akad['sisa_piutang'] != null) {
+            sisa = double.parse(akad['sisa_piutang'].toString());
+            sudahBayar = totalPiutang - sisa;
           } else {
-            tempBelum++;
-            tempTotalSisa += sisa;
-            tempAngsuranBulanan += angsuranPerBulan;
+            // Fallback jika API tidak mengirim sisa/bayar
+            // Jika status lunas, sisa 0. Jika tidak, sisa full (krn blm ada data bayar detail di list ini)
+            if (akad['status'] == 'Lunas') {
+              sisa = 0;
+              sudahBayar = totalPiutang;
+            }
           }
 
+          // Tentukan Status Lunas (Bisa dari field 'status' atau sisa hutang)
+          bool isLunas = (akad['status'] == 'Lunas') || (sisa <= 100);
+
+          if (isLunas) {
+            tempLunas++;
+            sisa = 0; // Pastikan 0 jika lunas
+          } else {
+            // Hanya hitung status Aktif/Disetujui ke dalam tanggungan
+            if (akad['status'] == 'Disetujui' || akad['status'] == 'Aktif') {
+              tempBelum++;
+              tempTotalSisa += sisa;
+              tempAngsuranBulanan += angsuranPerBulan;
+            }
+          }
+
+          // Buat Map baru untuk UI
           var newItem = Map<String, dynamic>.from(akad);
           newItem['sisa_real'] = sisa;
           newItem['sudah_bayar'] = sudahBayar;
           newItem['is_lunas'] = isLunas;
           newItem['angsuran_bulanan'] = angsuranPerBulan;
+          newItem['total_piutang'] = totalPiutang;
 
           processedList.add(newItem);
         } catch (e) {
-          debugPrint("Error processing akad ID ${akad['id']}: $e");
+          debugPrint("Error parsing akad: $e");
         }
       }
 
@@ -118,10 +137,13 @@ class _DetailJualBeliAnggotaPageState extends State<DetailJualBeliAnggotaPage> {
     }
   }
 
-  // --- SHOW RINCIAN BAYAR (BOTTOM SHEET VERSION) ---
+  // --- 3. SHOW RINCIAN BAYAR (API VERSION) ---
   void _showRincianBayar(Map<String, dynamic> akad) async {
     try {
-      final riwayat = await _dbHelper.getRiwayatAngsuran(akad['id']);
+      // Panggil fungsi baru di ApiService
+      // Pastikan 'id' sudah integer
+      int akadId = int.parse(akad['id'].toString());
+      final riwayat = await _apiService.getRiwayatAngsuranMurabahah(akadId);
 
       if (!mounted) return;
 
@@ -194,29 +216,29 @@ class _DetailJualBeliAnggotaPageState extends State<DetailJualBeliAnggotaPage> {
                                   const Divider(height: 1),
                               itemBuilder: (ctx, i) {
                                 final item = riwayat[i];
-                                double bayar = (item['jumlah_bayar'] as num?)
-                                        ?.toDouble() ??
-                                    0.0;
+                                // Parse data dari JSON (String/Num)
+                                double bayar = double.parse(
+                                    item['jumlah_bayar'].toString());
+                                String tgl = item['tgl_bayar'] ?? '-';
 
-                                // Ambil angsuran_ke, jika null atau 0 dianggap tidak valid
-                                int angsuranKe =
-                                    (item['angsuran_ke'] as num?)?.toInt() ?? 0;
-                                String labelAngsuran =
-                                    (angsuranKe > 0) ? "Ke-$angsuranKe" : "";
+                                // Cek angsuran ke berapa
+                                String labelAngsuran = "";
+                                if (item['angsuran_ke'] != null) {
+                                  labelAngsuran = "Ke-${item['angsuran_ke']}";
+                                }
 
                                 return ListTile(
                                   contentPadding: const EdgeInsets.symmetric(
                                       horizontal: 20, vertical: 5),
                                   leading: CircleAvatar(
-                                    backgroundColor:
-                                        Colors.lightBlue[50], // Biru muda
+                                    backgroundColor: Colors.lightBlue[50],
                                     child: const Icon(Icons.check_circle,
                                         color: Colors.lightBlue, size: 20),
                                   ),
                                   title: Text(_formatter.format(bayar),
                                       style: const TextStyle(
                                           fontWeight: FontWeight.bold)),
-                                  subtitle: Text(item['tgl_bayar'] ?? '-'),
+                                  subtitle: Text(tgl),
                                   trailing: labelAngsuran.isNotEmpty
                                       ? Text(labelAngsuran,
                                           style: const TextStyle(
@@ -253,6 +275,7 @@ class _DetailJualBeliAnggotaPageState extends State<DetailJualBeliAnggotaPage> {
         },
       );
     } catch (e) {
+      debugPrint("Error detail bayar: $e");
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text("Gagal membuka rincian")));
     }
@@ -264,7 +287,7 @@ class _DetailJualBeliAnggotaPageState extends State<DetailJualBeliAnggotaPage> {
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
         title: const Text("Detail Jual Beli"),
-        backgroundColor: Colors.lightBlue, // WARNA BARU: BIRU LANGIT
+        backgroundColor: Colors.lightBlue,
         foregroundColor: Colors.white,
         elevation: 0,
       ),
@@ -272,11 +295,11 @@ class _DetailJualBeliAnggotaPageState extends State<DetailJualBeliAnggotaPage> {
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
-                // --- 1. HEADER SUMMARY (WARNA BARU) ---
+                // --- 1. HEADER SUMMARY ---
                 Container(
                   padding: const EdgeInsets.all(20),
                   decoration: const BoxDecoration(
-                    color: Colors.lightBlue, // WARNA BARU: BIRU LANGIT
+                    color: Colors.lightBlue,
                     borderRadius: BorderRadius.only(
                       bottomLeft: Radius.circular(25),
                       bottomRight: Radius.circular(25),
@@ -402,9 +425,14 @@ class _DetailJualBeliAnggotaPageState extends State<DetailJualBeliAnggotaPage> {
                           itemBuilder: (context, index) {
                             final item = _listAkad[index];
                             final bool lunas = item['is_lunas'];
-                            final double progress = (item['total_piutang'] == 0)
-                                ? 0.0
-                                : (item['sudah_bayar'] / item['total_piutang']);
+
+                            // Hitung progress bar (0.0 - 1.0)
+                            double total =
+                                double.parse(item['total_piutang'].toString());
+                            double bayar =
+                                double.parse(item['sudah_bayar'].toString());
+                            double progress =
+                                (total == 0) ? 0.0 : (bayar / total);
 
                             return Card(
                               elevation: 2,
@@ -526,7 +554,7 @@ class _DetailJualBeliAnggotaPageState extends State<DetailJualBeliAnggotaPage> {
                                       Align(
                                         alignment: Alignment.centerRight,
                                         child: Text(
-                                          "Terbayar: ${_formatter.format(item['sudah_bayar'])} / ${_formatter.format(item['total_piutang'])}",
+                                          "Terbayar: ${_formatter.format(bayar)} / ${_formatter.format(total)}",
                                           style: const TextStyle(
                                               fontSize: 10, color: Colors.grey),
                                         ),

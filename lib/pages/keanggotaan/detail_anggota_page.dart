@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../data/db_helper.dart';
+import '../../services/api_service.dart';
 import 'edit_anggota_page.dart';
 
 // Import Halaman Detail Fasilitas
@@ -19,9 +19,11 @@ class DetailAnggotaPage extends StatefulWidget {
 }
 
 class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
-  final DbHelper _dbHelper = DbHelper();
+  final ApiService _apiService = ApiService();
+
   late Map<String, dynamic> _currentNasabah;
   double _saldoWadiah = 0;
+  List<dynamic> _riwayatMutasi = [];
 
   // VARIABEL SUMMARY MURABAHAH (JUAL BELI)
   double _murabahahSisaKewajiban = 0;
@@ -60,55 +62,59 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
   Future<void> _refreshAllData() async {
     await _loadSaldoWadiah();
     await _loadMurabahahSummary();
-    await _loadMudharabahSummary();
+    await _loadMudharabahSummary(); // <--- INI SUDAH DIPERBAIKI DI BAWAH
     await _loadPinjamanSummary();
     await _loadUsahaSummary();
   }
 
+  // --- 1. LOAD SALDO WADIAH ---
   Future<void> _loadSaldoWadiah() async {
     try {
-      double saldo = await _dbHelper.getSaldoWadiah(_currentNasabah['id']);
-      if (mounted) setState(() => _saldoWadiah = saldo);
+      int id = int.parse(_currentNasabah['id'].toString());
+      final response = await _apiService.getWadiah(id);
+
+      if (mounted && response['status'] == true) {
+        setState(() {
+          _saldoWadiah = double.parse(response['saldo'].toString());
+          _riwayatMutasi = response['data'] ?? [];
+        });
+      }
     } catch (e) {
-      debugPrint("Error load saldo: $e");
+      debugPrint("Error load saldo API: $e");
     }
   }
 
-  // --- LOGIKA HITUNG SUMMARY MURABAHAH ---
+  // --- 2. LOAD SUMMARY MURABAHAH ---
   Future<void> _loadMurabahahSummary() async {
     try {
-      final db = await _dbHelper.database;
-      final List<Map<String, dynamic>> akadList = await db.query(
-        'murabahah_akad',
-        where: 'nasabah_id = ?',
-        whereArgs: [_currentNasabah['id']],
-      );
+      final List<dynamic> allAkad = await _apiService.getAkadJualBeli();
+
+      final myAkad = allAkad
+          .where((item) =>
+              item['nasabah_id'].toString() == _currentNasabah['id'].toString())
+          .toList();
 
       double tempSisa = 0;
       double tempBeban = 0;
       int tempBelum = 0;
       int tempLunas = 0;
 
-      for (var akad in akadList) {
-        var resBayar = await db.rawQuery(
-            "SELECT SUM(jumlah_bayar) as total FROM murabah_angsuran WHERE akad_id = ?",
-            [akad['id']]);
-
-        double totalPiutang =
-            (akad['total_piutang'] as num?)?.toDouble() ?? 0.0;
-        double sudahBayar =
-            (resBayar.first['total'] as num?)?.toDouble() ?? 0.0;
+      for (var akad in myAkad) {
+        double totalPiutang = double.parse(akad['total_piutang'].toString());
         double angsuranPerBulan =
-            (akad['angsuran_bulanan'] as num?)?.toDouble() ?? 0.0;
+            double.parse(akad['angsuran_bulanan'].toString());
 
-        double sisa = totalPiutang - sudahBayar;
-        bool isLunas = sisa <= 100;
+        String status = akad['status'] ?? 'Pengajuan';
 
-        if (isLunas) {
+        if (status == 'Lunas') {
           tempLunas++;
-        } else {
+        } else if (status == 'Disetujui' || status == 'Aktif') {
           tempBelum++;
-          tempSisa += sisa;
+          double sisaServer = akad['sisa_piutang'] != null
+              ? double.parse(akad['sisa_piutang'].toString())
+              : totalPiutang;
+
+          tempSisa += sisaServer;
           tempBeban += angsuranPerBulan;
         }
       }
@@ -122,118 +128,139 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
         });
       }
     } catch (e) {
-      debugPrint("Error load murabahah summary: $e");
+      debugPrint("Error load murabahah API: $e");
     }
   }
 
-  // --- LOGIKA HITUNG SUMMARY MUDHARABAH ---
+  // --- 3. LOAD SUMMARY MUDHARABAH (LOGIC LENGKAP) ---
   Future<void> _loadMudharabahSummary() async {
     try {
-      final db = await _dbHelper.database;
-      final akadList = await db.query(
-        'mudharabah_akad',
-        where: 'nasabah_id = ?',
-        whereArgs: [_currentNasabah['id']],
-      );
+      // A. Ambil Daftar Akad
+      final response = await _apiService.getMudharabah();
 
-      double tempModal = 0;
-      double tempKeuntungan = 0;
-      double tempBagiHasilBMT = 0;
+      if (response['status'] == true && response['data'] is List) {
+        List<dynamic> allData = response['data'];
 
-      for (var akad in akadList) {
-        if (akad['status'] == 'Disetujui' || akad['status'] == 'Aktif') {
-          tempModal += (akad['nominal_modal'] as num?)?.toDouble() ?? 0;
+        var myAkad = allData
+            .where((item) =>
+                item['nasabah_id'].toString() ==
+                _currentNasabah['id'].toString())
+            .toList();
+
+        double tempModal = 0;
+        double tempKeuntungan = 0;
+        double tempBMT = 0;
+        double tempNasabah = 0;
+
+        // B. Loop setiap Akad
+        for (var akad in myAkad) {
+          // 1. Hitung Modal
+          String status = akad['status'] ?? '';
+          if (status == 'Disetujui' ||
+              status == 'Aktif' ||
+              status == 'Berjalan') {
+            tempModal += double.tryParse(akad['modal'].toString()) ??
+                double.tryParse(akad['nominal_modal'].toString()) ??
+                0;
+          }
+
+          // 2. Hitung Keuntungan (Panggil API Riwayat per Akad)
+          try {
+            int akadId = int.parse(akad['id'].toString());
+            List<dynamic> riwayat =
+                await _apiService.getRiwayatBagiHasil(akadId);
+
+            for (var tr in riwayat) {
+              tempKeuntungan +=
+                  double.tryParse(tr['total_keuntungan'].toString()) ?? 0;
+              tempBMT += double.tryParse(tr['bagian_bmt'].toString()) ?? 0;
+              tempNasabah +=
+                  double.tryParse(tr['bagian_nasabah'].toString()) ?? 0;
+            }
+          } catch (e) {
+            debugPrint("Skip detail akad $e");
+          }
         }
 
-        final transaksiList = await db.query(
-          'mudharabah_transaksi',
-          where: 'akad_id = ?',
-          whereArgs: [akad['id']],
-        );
-
-        for (var tr in transaksiList) {
-          tempKeuntungan += (tr['total_keuntungan'] as num?)?.toDouble() ?? 0;
-          tempBagiHasilBMT += (tr['bagian_bmt'] as num?)?.toDouble() ?? 0;
+        if (mounted) {
+          setState(() {
+            _mudharabahTotalModal = tempModal;
+            _mudharabahTotalKeuntungan = tempKeuntungan;
+            _mudharabahKeuntunganBMT = tempBMT;
+            _mudharabahKeuntunganNasabah = tempNasabah;
+          });
         }
-      }
-
-      if (mounted) {
-        setState(() {
-          _mudharabahTotalModal = tempModal;
-          _mudharabahTotalKeuntungan = tempKeuntungan;
-          _mudharabahKeuntunganBMT = tempBagiHasilBMT;
-          _mudharabahKeuntunganNasabah = tempKeuntungan - tempBagiHasilBMT;
-        });
       }
     } catch (e) {
-      debugPrint("Error load mudharabah summary: $e");
+      debugPrint("Error load mudharabah API: $e");
     }
   }
 
-  // --- LOGIKA HITUNG SUMMARY PINJAMAN LUNAK ---
+  // --- 4. LOAD SUMMARY PINJAMAN ---
   Future<void> _loadPinjamanSummary() async {
     try {
-      final db = await _dbHelper.database;
-      final pinjamanList = await db.query(
-        'pinjaman_lunak',
-        where: 'nasabah_id = ?',
-        whereArgs: [_currentNasabah['id']],
-      );
+      final response = await _apiService.getPinjamanLunak();
+      if (response['status'] == true && response['data'] != null) {
+        List<dynamic> list = response['data'];
+        var myPinjaman = list.where((e) =>
+            e['nasabah_id'].toString() == _currentNasabah['id'].toString());
 
-      double tempPlafond = 0;
-      double tempBayar = 0;
+        double tempPlafond = 0;
+        double tempSisa = 0;
 
-      for (var p in pinjamanList) {
-        var resBayar = await db.rawQuery(
-            "SELECT SUM(jumlah_bayar) as total FROM pinjaman_lunak_cicilan WHERE pinjaman_id = ?",
-            [p['id']]);
+        for (var p in myPinjaman) {
+          if (p['status'] == 'Disetujui' || p['status'] == 'Lunas') {
+            double nominal = double.parse(p['nominal'].toString());
+            double sisa = p['sisa_pinjaman'] != null
+                ? double.parse(p['sisa_pinjaman'].toString())
+                : nominal;
 
-        double nominal = (p['nominal'] as num?)?.toDouble() ?? 0.0;
-        double sudahBayar =
-            (resBayar.first['total'] as num?)?.toDouble() ?? 0.0;
+            tempPlafond += nominal;
+            tempSisa += sisa;
+          }
+        }
 
-        if (p['status'] == 'Disetujui' || p['status'] == 'Lunas') {
-          tempPlafond += nominal;
-          tempBayar += sudahBayar;
+        if (mounted) {
+          setState(() {
+            _pinjamanTotalPlafond = tempPlafond;
+            _pinjamanSisaTagihan = tempSisa;
+            _pinjamanSudahBayar = tempPlafond - tempSisa;
+          });
         }
       }
-
-      if (mounted) {
-        setState(() {
-          _pinjamanTotalPlafond = tempPlafond;
-          _pinjamanSudahBayar = tempBayar;
-          _pinjamanSisaTagihan = tempPlafond - tempBayar;
-        });
-      }
     } catch (e) {
-      debugPrint("Error load pinjaman summary: $e");
+      debugPrint("Error load pinjaman API: $e");
     }
   }
 
-  // --- LOGIKA HITUNG SUMMARY USAHA BERSAMA ---
+  // --- 5. LOAD SUMMARY USAHA BERSAMA ---
   Future<void> _loadUsahaSummary() async {
     try {
-      final db = await _dbHelper.database;
-
-      final List<Map<String, dynamic>> portofolio = await db.rawQuery('''
-        SELECT m.jumlah_modal
-        FROM usaha_modal m
-        WHERE LOWER(m.nama_pemodal) LIKE LOWER(?)
-      ''', ['%${_currentNasabah['nama']}%']);
-
       double tempInvestasi = 0;
-      for (var p in portofolio) {
-        tempInvestasi += (p['jumlah_modal'] as num?)?.toDouble() ?? 0.0;
+      double tempKeuntungan = 0;
+
+      // Ambil Modal (Harus filter dari semua usaha karena belum ada endpoint spesifik)
+      final List<dynamic> allUsaha = await _apiService.getUsahaBersama();
+      for (var usaha in allUsaha) {
+        int usahaId = int.parse(usaha['id'].toString());
+        final List<dynamic> pemodalList =
+            await _apiService.getModalUsaha(usahaId);
+
+        // Cari nama nasabah ini
+        var myModal = pemodalList.where((p) =>
+            p['nama_pemodal'].toString().toLowerCase() ==
+            _currentNasabah['nama'].toString().toLowerCase());
+        for (var m in myModal) {
+          tempInvestasi += double.tryParse(m['jumlah_modal'].toString()) ?? 0;
+        }
       }
 
-      final resKeuntungan = await db.rawQuery('''
-        SELECT SUM(jumlah) as total 
-        FROM transaksi_wadiah 
-        WHERE nasabah_id = ? AND keterangan LIKE 'Bagi Hasil Otomatis:%'
-      ''', [_currentNasabah['id']]);
-
-      double tempKeuntungan =
-          (resKeuntungan.first['total'] as num?)?.toDouble() ?? 0.0;
+      // Hitung Keuntungan dari Riwayat Wadiah
+      for (var m in _riwayatMutasi) {
+        if (m['keterangan'].toString().contains('Bagi Hasil')) {
+          tempKeuntungan += double.parse(m['jumlah'].toString());
+        }
+      }
 
       if (mounted) {
         setState(() {
@@ -242,170 +269,159 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
         });
       }
     } catch (e) {
-      debugPrint("Error load usaha summary: $e");
+      debugPrint("Error usaha summary: $e");
     }
   }
 
   Future<void> _refreshData() async {
-    final allNasabah = await _dbHelper.getAllAnggota();
     try {
-      final updatedData = allNasabah.firstWhere(
-        (element) => element['id'] == _currentNasabah['id'],
+      final allAnggota = await _apiService.getAllAnggota();
+      final updatedData = allAnggota.firstWhere(
+        (element) =>
+            element['id'].toString() == _currentNasabah['id'].toString(),
+        orElse: () => _currentNasabah,
       );
+
       setState(() => _currentNasabah = updatedData);
       await _refreshAllData();
     } catch (e) {
-      if (mounted) Navigator.pop(context);
+      debugPrint("Gagal refresh user: $e");
     }
   }
 
-  // --- FUNGSI RIWAYAT MUTASI ---
-  void _showRiwayatMutasi() async {
-    try {
-      final db = await _dbHelper.database;
-      final List<Map<String, dynamic>> riwayat = await db.query(
-        'transaksi_wadiah',
-        where: 'nasabah_id = ?',
-        whereArgs: [_currentNasabah['id']],
-        orderBy: 'id DESC',
-      );
-
-      if (!mounted) return;
-
-      showModalBottomSheet(
-        context: context,
-        isScrollControlled: true,
-        backgroundColor: Colors.transparent,
-        builder: (context) {
-          return DraggableScrollableSheet(
-            initialChildSize: 0.6,
-            minChildSize: 0.4,
-            maxChildSize: 0.95,
-            builder: (context, scrollController) {
-              return Container(
-                decoration: const BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-                ),
-                child: Column(
-                  children: [
-                    Center(
-                      child: Container(
-                        margin: const EdgeInsets.only(top: 10, bottom: 5),
-                        width: 50,
-                        height: 5,
-                        decoration: BoxDecoration(
-                            color: Colors.grey[300],
-                            borderRadius: BorderRadius.circular(10)),
-                      ),
+  void _showRiwayatMutasi() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.6,
+          minChildSize: 0.4,
+          maxChildSize: 0.95,
+          builder: (context, scrollController) {
+            return Container(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+              ),
+              child: Column(
+                children: [
+                  Center(
+                    child: Container(
+                      margin: const EdgeInsets.only(top: 10, bottom: 5),
+                      width: 50,
+                      height: 5,
+                      decoration: BoxDecoration(
+                          color: Colors.grey[300],
+                          borderRadius: BorderRadius.circular(10)),
                     ),
-                    Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text("Riwayat Mutasi Tabungan",
-                              style: TextStyle(
-                                  fontSize: 18, fontWeight: FontWeight.bold)),
-                          Text("${riwayat.length} Transaksi",
-                              style: TextStyle(
-                                  color: Colors.grey[600], fontSize: 12)),
-                        ],
-                      ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text("Riwayat Mutasi Tabungan",
+                            style: TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold)),
+                        Text("${_riwayatMutasi.length} Transaksi",
+                            style: TextStyle(
+                                color: Colors.grey[600], fontSize: 12)),
+                      ],
                     ),
-                    const Divider(height: 1),
-                    Expanded(
-                      child: riwayat.isEmpty
-                          ? Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.history_edu,
-                                      size: 60, color: Colors.grey[300]),
-                                  const SizedBox(height: 10),
-                                  const Text("Belum ada riwayat transaksi.",
-                                      style: TextStyle(color: Colors.grey)),
-                                ],
-                              ),
-                            )
-                          : ListView.separated(
-                              controller: scrollController,
-                              itemCount: riwayat.length,
-                              separatorBuilder: (ctx, i) =>
-                                  const Divider(height: 1),
-                              itemBuilder: (context, index) {
-                                final item = riwayat[index];
-                                String jenis = item['jenis'] ?? 'Transaksi';
-                                double nominal =
-                                    (item['jumlah'] as num?)?.toDouble() ?? 0;
-                                String tanggal = item['tgl_transaksi'] ?? '-';
-                                bool isMasuk = [
-                                  'Setoran',
-                                  'Setor Tunai',
-                                  'Bagi Hasil',
-                                  'Setoran Awal'
-                                ].any((e) => jenis.contains(e));
-
-                                return ListTile(
-                                  contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 20, vertical: 5),
-                                  leading: CircleAvatar(
-                                    backgroundColor: isMasuk
-                                        ? Colors.green.withOpacity(0.1)
-                                        : Colors.red.withOpacity(0.1),
-                                    child: Icon(
-                                      isMasuk
-                                          ? Icons.arrow_downward
-                                          : Icons.arrow_upward,
-                                      color:
-                                          isMasuk ? Colors.green : Colors.red,
-                                      size: 20,
-                                    ),
-                                  ),
-                                  title: Text(jenis,
-                                      style: const TextStyle(
-                                          fontWeight: FontWeight.bold)),
-                                  subtitle: Text(tanggal,
-                                      style: const TextStyle(fontSize: 12)),
-                                  trailing: Text(
-                                    "${isMasuk ? '+' : '-'} ${_formatter.format(nominal)}",
-                                    style: TextStyle(
-                                      color: isMasuk
-                                          ? Colors.green[700]
-                                          : Colors.red[700],
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 14,
-                                    ),
-                                  ),
-                                );
-                              },
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: _riwayatMutasi.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.history_edu,
+                                    size: 60, color: Colors.grey[300]),
+                                const SizedBox(height: 10),
+                                const Text("Belum ada riwayat transaksi.",
+                                    style: TextStyle(color: Colors.grey)),
+                              ],
                             ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton(
-                          onPressed: () => Navigator.pop(context),
-                          style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 15),
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10))),
-                          child: const Text("TUTUP",
-                              style: TextStyle(fontWeight: FontWeight.bold)),
-                        ),
+                          )
+                        : ListView.separated(
+                            controller: scrollController,
+                            itemCount: _riwayatMutasi.length,
+                            separatorBuilder: (ctx, i) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final item = _riwayatMutasi[index];
+
+                              String jenis = item['jenis'] ?? 'Transaksi';
+                              double nominal =
+                                  double.parse(item['jumlah'].toString());
+                              String tanggal = item['tgl_transaksi'] ?? '-';
+
+                              bool isMasuk = [
+                                'Setoran',
+                                'Setor Tunai',
+                                'Bagi Hasil',
+                                'Setoran Awal'
+                              ].any((e) => jenis.contains(e));
+
+                              return ListTile(
+                                contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 20, vertical: 5),
+                                leading: CircleAvatar(
+                                  backgroundColor: isMasuk
+                                      ? Colors.green.withOpacity(0.1)
+                                      : Colors.red.withOpacity(0.1),
+                                  child: Icon(
+                                    isMasuk
+                                        ? Icons.arrow_downward
+                                        : Icons.arrow_upward,
+                                    color: isMasuk ? Colors.green : Colors.red,
+                                    size: 20,
+                                  ),
+                                ),
+                                title: Text(jenis,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.bold)),
+                                subtitle: Text(tanggal,
+                                    style: const TextStyle(fontSize: 12)),
+                                trailing: Text(
+                                  "${isMasuk ? '+' : '-'} ${_formatter.format(nominal)}",
+                                  style: TextStyle(
+                                    color: isMasuk
+                                        ? Colors.green[700]
+                                        : Colors.red[700],
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 15),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10))),
+                        child: const Text("TUTUP",
+                            style: TextStyle(fontWeight: FontWeight.bold)),
                       ),
-                    )
-                  ],
-                ),
-              );
-            },
-          );
-        },
-      );
-    } catch (e) {
-      debugPrint("Gagal membuka riwayat: $e");
-    }
+                    ),
+                  )
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
@@ -446,28 +462,23 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
                       fontWeight: FontWeight.bold, color: Colors.grey)),
               const SizedBox(height: 10),
 
-              // 1. KARTU SALDO WADIAH
               _buildWadiahCard(),
               const SizedBox(height: 15),
 
-              // 2. KARTU JUAL BELI MURABAHAH
               _buildMurabahahCard(),
               const SizedBox(height: 15),
 
-              // 3. KARTU BAGI HASIL MUDHARABAH
+              // --- KARTU MUDHARABAH (YANG DATA-NYA SUDAH DIPERBAIKI) ---
               _buildMudharabahCard(),
               const SizedBox(height: 15),
 
-              // 4. KARTU PINJAMAN LUNAK
               _buildPinjamanCard(),
               const SizedBox(height: 15),
 
-              // 5. KARTU USAHA BERSAMA
               _buildUsahaCard(),
 
               const SizedBox(height: 30),
 
-              // TOMBOL HAPUS
               SizedBox(
                 width: double.infinity,
                 child: TextButton.icon(
@@ -586,7 +597,7 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
                 context,
                 MaterialPageRoute(
                   builder: (context) => DetailJualBeliAnggotaPage(
-                    nasabahId: _currentNasabah['id'],
+                    nasabahId: int.parse(_currentNasabah['id'].toString()),
                   ),
                 ),
               ).then((_) => _refreshAllData());
@@ -697,7 +708,8 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
                     context,
                     MaterialPageRoute(
                         builder: (context) => DetailBagiHasilAnggotaPage(
-                            nasabahId: _currentNasabah['id'])))
+                            nasabahId:
+                                int.parse(_currentNasabah['id'].toString()))))
                 .then((_) => _refreshAllData()),
             child: Padding(
               padding: const EdgeInsets.all(20),
@@ -802,7 +814,8 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
                     context,
                     MaterialPageRoute(
                         builder: (context) => DetailPinjamanLunakAnggotaPage(
-                            nasabahId: _currentNasabah['id'])))
+                            nasabahId:
+                                int.parse(_currentNasabah['id'].toString()))))
                 .then((_) => _refreshAllData()),
             child: Padding(
               padding: const EdgeInsets.all(20),
@@ -882,12 +895,12 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
           ),
           child: InkWell(
             onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (context) => DetailUsahaBersamaAnggotaPage(
-                            nasabahId: _currentNasabah['id'],
-                            namaNasabah: _currentNasabah['nama'])))
-                .then((_) => _refreshAllData()),
+                context,
+                MaterialPageRoute(
+                    builder: (context) => DetailUsahaBersamaAnggotaPage(
+                        nasabahId: int.parse(_currentNasabah['id'].toString()),
+                        namaNasabah: _currentNasabah['nama']))).then(
+                (_) => _refreshAllData()),
             child: Padding(
               padding: const EdgeInsets.all(20),
               child: Column(
@@ -961,11 +974,25 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
         false;
 
     if (confirm) {
-      await _dbHelper.deleteAnggota(_currentNasabah['id']);
-      if (mounted) {
-        Navigator.pop(context, true);
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Anggota berhasil dihapus")));
+      try {
+        bool success = await _apiService
+            .deleteAnggota(int.parse(_currentNasabah['id'].toString()));
+
+        if (mounted) {
+          if (success) {
+            Navigator.pop(context, true);
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("Anggota berhasil dihapus")));
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text("Gagal menghapus anggota. Cek API.")));
+          }
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text("Error: $e")));
+        }
       }
     }
   }

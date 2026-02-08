@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../../data/db_helper.dart';
+import '../../../services/api_service.dart'; // Pastikan path ini sesuai
 import 'detail_laporan_usaha_page.dart';
 
 class LaporanUsahaPage extends StatefulWidget {
@@ -13,12 +13,13 @@ class LaporanUsahaPage extends StatefulWidget {
 }
 
 class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
-  final DbHelper _dbHelper = DbHelper();
+  final ApiService _apiService = ApiService();
+
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _listLaporan = [];
-  double _totalPemasukan = 0; // Ini Total Kotor (Pemasukan)
+  List<dynamic> _listLaporan = [];
+  double _totalPemasukan = 0;
   bool _isLoading = true;
 
   @override
@@ -27,18 +28,31 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
     _loadData();
   }
 
+  // --- FUNGSI LOAD DATA DARI SERVER ---
   Future<void> _loadData() async {
-    final laporan = await _dbHelper.getLaporanByUsahaId(widget.usaha['id']);
-    // Ambil total pemasukan kotor dari tabel pemasukan
-    final totalPending =
-        await _dbHelper.getPemasukanBelumDibagi(widget.usaha['id']);
+    setState(() => _isLoading = true);
+    try {
+      int usahaId = int.parse(widget.usaha['id'].toString());
 
-    if (mounted) {
-      setState(() {
-        _listLaporan = laporan;
-        _totalPemasukan = totalPending;
-        _isLoading = false;
-      });
+      final results = await Future.wait([
+        _apiService.getLaporanUsaha(usahaId),
+        _apiService.getPemasukanPending(usahaId)
+      ]);
+
+      if (mounted) {
+        setState(() {
+          _listLaporan = results[0] as List<dynamic>;
+          _totalPemasukan = double.parse(results[1].toString());
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Gagal memuat data: $e")),
+        );
+      }
     }
   }
 
@@ -52,15 +66,16 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
       return;
     }
 
-    // --- RUMUS PERHITUNGAN (Hanya untuk Tampilan Preview) ---
     double totalMasuk = _totalPemasukan;
     double kontribusiBmt = totalMasuk * 0.05; // 5%
     double danaSiapDibagi = totalMasuk - kontribusiBmt; // 95%
 
     final tglController = TextEditingController(
-        text: DateFormat('dd/MM/yyyy').format(DateTime.now()));
+        text: DateFormat('yyyy-MM-dd').format(DateTime.now()));
+
     final ketController = TextEditingController();
     final formKey = GlobalKey<FormState>();
+    bool isSubmitting = false;
 
     showModalBottomSheet(
       context: context,
@@ -130,7 +145,7 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                // --- INFORMASI KEUANGAN (HEADER STYLE) ---
+                                // Info Keuangan
                                 Container(
                                   padding: const EdgeInsets.all(16),
                                   decoration: BoxDecoration(
@@ -175,7 +190,7 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
                                       const SizedBox(width: 10),
                                       const Expanded(
                                         child: Text(
-                                          "Dana Siap Dibagi akan didistribusikan otomatis ke Tabungan Wadiah pemodal sesuai porsi modal.",
+                                          "Sistem server akan otomatis memotong 5% dan mendistribusikan sisa dana ke Tabungan Wadiah pemodal.",
                                           style: TextStyle(
                                               fontSize: 12,
                                               color: Colors.black87),
@@ -210,7 +225,7 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
                                     );
                                     if (picked != null) {
                                       tglController.text =
-                                          DateFormat('dd/MM/yyyy')
+                                          DateFormat('yyyy-MM-dd')
                                               .format(picked);
                                     }
                                   },
@@ -256,41 +271,71 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
                                     const EdgeInsets.symmetric(vertical: 15),
                                 shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(10))),
-                            onPressed: () async {
-                              if (formKey.currentState!.validate()) {
-                                // PERBAIKAN PENTING DI SINI:
-                                // Kita kirim 'totalMasuk' (Nilai KOTOR 100%) ke database.
-                                // DbHelper yang akan memotong 5% dan menyimpan sisanya.
-                                await _dbHelper.buatLaporanUsaha(
-                                    usahaId: widget.usaha['id'],
-                                    namaUsaha: widget.usaha['nama_usaha'],
-                                    totalLapor:
-                                        totalMasuk, // <--- GUNAKAN TOTAL MASUK (100%)
-                                    tgl: tglController.text,
-                                    ket: ketController.text.isEmpty
-                                        ? "Laporan Berkala"
-                                        : ketController.text);
+                            // --- BAGIAN INI TELAH DIUPDATE ---
+                            onPressed: isSubmitting
+                                ? null
+                                : () async {
+                                    if (formKey.currentState!.validate()) {
+                                      setStateSheet(() => isSubmitting = true);
 
-                                if (mounted) {
-                                  Navigator.pop(context); // Tutup Sheet
-                                  await _loadData(); // Refresh Data
+                                      // 1. Terima hasil sebagai Map (bukan bool lagi)
+                                      Map<String, dynamic> result =
+                                          await _apiService.prosesBagiHasil({
+                                        "action": "proses_bagi_hasil",
+                                        "usaha_id": widget.usaha['id'],
+                                        "nama_usaha":
+                                            widget.usaha['nama_usaha'],
+                                        "total_lapor": totalMasuk,
+                                        "tgl": tglController.text,
+                                        "ket": ketController.text.isEmpty
+                                            ? "Laporan Berkala"
+                                            : ketController.text
+                                      });
 
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                          "Sukses! Dana Bersih dibagikan ke pemodal."),
-                                      backgroundColor: Colors.green,
-                                      duration: Duration(seconds: 3),
-                                    ),
-                                  );
-                                }
-                              }
-                            },
-                            child: const Text("PROSES BAGI HASIL",
-                                style: TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16)),
+                                      setStateSheet(() => isSubmitting = false);
+
+                                      if (mounted) {
+                                        // 2. Cek Status
+                                        if (result['status'] == true) {
+                                          Navigator.pop(context); // Tutup Sheet
+                                          await _loadData(); // Refresh
+
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            const SnackBar(
+                                              content: Text(
+                                                  "Sukses! Dana Bersih dibagikan ke pemodal."),
+                                              backgroundColor: Colors.green,
+                                              duration: Duration(seconds: 3),
+                                            ),
+                                          );
+                                        } else {
+                                          // 3. Tampilkan Pesan Error Spesifik dari PHP
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                              content: Text(result['message'] ??
+                                                  "Gagal memproses."),
+                                              backgroundColor: Colors.red,
+                                              duration:
+                                                  const Duration(seconds: 4),
+                                            ),
+                                          );
+                                        }
+                                      }
+                                    }
+                                  },
+                            child: isSubmitting
+                                ? const SizedBox(
+                                    height: 20,
+                                    width: 20,
+                                    child: CircularProgressIndicator(
+                                        color: Colors.white, strokeWidth: 2))
+                                : const Text("PROSES BAGI HASIL",
+                                    style: TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16)),
                           ),
                         ),
                       )
@@ -305,7 +350,6 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
     );
   }
 
-  // Widget Helper untuk Baris Ringkasan
   Widget _buildSummaryRow(String label, double nominal,
       {bool isBold = false, Color? color, double fontSize = 14}) {
     return Padding(
@@ -330,7 +374,6 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
 
   @override
   Widget build(BuildContext context) {
-    // Hitung Breakdown untuk Header Utama
     double totalPemasukan = _totalPemasukan;
     double kontribusiBmt = totalPemasukan * 0.05;
     double danaSiapDibagi = totalPemasukan - kontribusiBmt;
@@ -342,117 +385,125 @@ class _LaporanUsahaPageState extends State<LaporanUsahaPage> {
         backgroundColor: const Color(0xFF2E7D32),
         foregroundColor: Colors.white,
       ),
-      body: Column(
-        children: [
-          // --- HEADER BARU ---
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(20),
-            decoration: const BoxDecoration(
-              color: Color(0xFF2E7D32),
-              borderRadius: BorderRadius.only(
-                bottomLeft: Radius.circular(30),
-                bottomRight: Radius.circular(30),
+      body: RefreshIndicator(
+        onRefresh: _loadData,
+        child: Column(
+          children: [
+            // --- HEADER INFO ---
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: const BoxDecoration(
+                color: Color(0xFF2E7D32),
+                borderRadius: BorderRadius.only(
+                  bottomLeft: Radius.circular(30),
+                  bottomRight: Radius.circular(30),
+                ),
+              ),
+              child: Column(
+                children: [
+                  _buildHeaderRow("Pemasukan Pending", totalPemasukan),
+                  const SizedBox(height: 8),
+                  _buildHeaderRow("Kontribusi BMT 5%", kontribusiBmt,
+                      isMinus: true),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 10),
+                    child: Divider(color: Colors.white30, height: 1),
+                  ),
+                  _buildHeaderRow("Est. Dana Dibagi", danaSiapDibagi,
+                      isBig: true),
+                ],
               ),
             ),
-            child: Column(
-              children: [
-                _buildHeaderRow("Pemasukan", totalPemasukan),
-                const SizedBox(height: 8),
-                _buildHeaderRow("Kontribusi BMT 5%", kontribusiBmt,
-                    isMinus: true),
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 10),
-                  child: Divider(color: Colors.white30, height: 1),
-                ),
-                _buildHeaderRow("Dana Siap Dibagi", danaSiapDibagi,
-                    isBig: true),
-              ],
-            ),
-          ),
 
-          // --- LIST RIWAYAT ---
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _listLaporan.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.assignment_outlined,
-                                size: 60, color: Colors.grey[400]),
-                            const SizedBox(height: 10),
-                            const Text("Belum ada riwayat laporan",
-                                style: TextStyle(color: Colors.grey)),
-                          ],
-                        ),
-                      )
-                    : ListView.separated(
-                        padding: const EdgeInsets.all(16),
-                        itemCount: _listLaporan.length,
-                        separatorBuilder: (context, index) =>
-                            const SizedBox(height: 10),
-                        itemBuilder: (context, index) {
-                          final item = _listLaporan[index];
-                          // Item di database menyimpan 'Dana Siap Dibagi' (Bersih)
-                          // Kita tampilkan itu saja di list
-                          return Card(
-                            elevation: 2,
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12)),
-                            child: ListTile(
-                              onTap: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) =>
-                                        DetailLaporanUsahaPage(
-                                      usaha: widget.usaha,
-                                      laporan: item,
+            // --- LIST RIWAYAT ---
+            Expanded(
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _listLaporan.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.assignment_outlined,
+                                  size: 60, color: Colors.grey[400]),
+                              const SizedBox(height: 10),
+                              const Text("Belum ada riwayat laporan",
+                                  style: TextStyle(color: Colors.grey)),
+                            ],
+                          ),
+                        )
+                      : ListView.separated(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: _listLaporan.length,
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(height: 10),
+                          itemBuilder: (context, index) {
+                            final item = _listLaporan[index];
+
+                            double totalLapor =
+                                double.parse(item['total_lapor'].toString());
+                            String tanggal = item['tgl_lapor'] ?? '-';
+                            String ket = item['keterangan'] ?? '-';
+
+                            return Card(
+                              elevation: 2,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                              child: ListTile(
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) =>
+                                          DetailLaporanUsahaPage(
+                                        usaha: widget.usaha,
+                                        laporan: item,
+                                      ),
                                     ),
-                                  ),
-                                );
-                              },
-                              contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 8),
-                              leading: CircleAvatar(
-                                backgroundColor: Colors.purple[100],
-                                child: Icon(Icons.check_circle,
-                                    color: Colors.purple[800]),
+                                  );
+                                },
+                                contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 8),
+                                leading: CircleAvatar(
+                                  backgroundColor: Colors.purple[100],
+                                  child: Icon(Icons.check_circle,
+                                      color: Colors.purple[800]),
+                                ),
+                                title: Text(
+                                  _formatter.format(totalLapor),
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16),
+                                ),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const SizedBox(height: 4),
+                                    Text(ket),
+                                    const SizedBox(height: 4),
+                                    Row(
+                                      children: [
+                                        Icon(Icons.calendar_today,
+                                            size: 12, color: Colors.grey[600]),
+                                        const SizedBox(width: 4),
+                                        Text(tanggal,
+                                            style: TextStyle(
+                                                color: Colors.grey[600],
+                                                fontSize: 12)),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                                trailing: const Icon(Icons.chevron_right,
+                                    color: Colors.grey),
                               ),
-                              title: Text(
-                                _formatter.format(item['total_lapor']),
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.bold, fontSize: 16),
-                              ),
-                              subtitle: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const SizedBox(height: 4),
-                                  Text(item['keterangan'] ?? '-'),
-                                  const SizedBox(height: 4),
-                                  Row(
-                                    children: [
-                                      Icon(Icons.calendar_today,
-                                          size: 12, color: Colors.grey[600]),
-                                      const SizedBox(width: 4),
-                                      Text(item['tgl_lapor'],
-                                          style: TextStyle(
-                                              color: Colors.grey[600],
-                                              fontSize: 12)),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                              trailing: const Icon(Icons.chevron_right,
-                                  color: Colors.grey),
-                            ),
-                          );
-                        },
-                      ),
-          ),
-        ],
+                            );
+                          },
+                        ),
+            ),
+          ],
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _showBuatLaporanSheet,

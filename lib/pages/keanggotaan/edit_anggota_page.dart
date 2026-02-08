@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-// UBAH: Gunakan ApiService
-import '../../services/api_service.dart';
+import '../../services/api_service.dart'; // Pastikan path ini benar
 
 class EditAnggotaPage extends StatefulWidget {
   final Map<String, dynamic> nasabah;
@@ -12,7 +11,8 @@ class EditAnggotaPage extends StatefulWidget {
 
 class _EditAnggotaPageState extends State<EditAnggotaPage> {
   final _formKey = GlobalKey<FormState>();
-  // UBAH: Inisialisasi ApiService
+
+  // 1. Inisialisasi API Service
   final ApiService _apiService = ApiService();
 
   // Controller Input
@@ -26,6 +26,8 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
 
   bool _isLoading = false;
   bool _tambahRekening = false;
+
+  // Variabel untuk Dropdown Bank
   String? _bankTerpilih;
   String _selectedStatus = 'Aktif';
 
@@ -35,6 +37,7 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
     'BNI',
     'BRI',
     'BSI',
+    'JATENG',
     'Lainnya'
   ];
 
@@ -44,38 +47,50 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
     _initDataNasabah();
   }
 
+  // --- INISIALISASI DATA AWAL (PARSING DARI DATA YANG DIKIRIM) ---
   void _initDataNasabah() {
     // 1. Data Dasar
     _nikController = TextEditingController(text: widget.nasabah['nik']);
     _namaController = TextEditingController(text: widget.nasabah['nama']);
     _teleponController = TextEditingController(text: widget.nasabah['telepon']);
     _alamatController = TextEditingController(text: widget.nasabah['alamat']);
+
+    // Set Status (Default Aktif jika null)
     _selectedStatus = widget.nasabah['status'] ?? 'Aktif';
 
-    // 2. Logika Parsing Rekening Bank
+    // 2. Logika Parsing Rekening Bank (Format: "BANK | NO_REK a/n NAMA")
     String rekInfo = widget.nasabah['rekening_bank'] ?? "";
+
+    _bankManualController = TextEditingController(); // Init awal
+
     if (rekInfo.isNotEmpty && rekInfo.contains('|')) {
       _tambahRekening = true;
       try {
-        // Format tersimpan: "BANK | NO_REK a/n NAMA"
         List<String> parts = rekInfo.split(' | ');
         String bankName = parts[0].trim();
-        List<String> details = parts[1].split(' a/n ');
 
-        String rekNo = details[0].trim();
-        String owner = details[1].trim();
+        // Cek bagian kedua (No Rek & Nama)
+        if (parts.length > 1 && parts[1].contains(' a/n ')) {
+          List<String> details = parts[1].split(' a/n ');
+          String rekNo = details[0].trim();
+          String owner = details.length > 1 ? details[1].trim() : "";
 
-        if (_daftarBank.contains(bankName)) {
-          _bankTerpilih = bankName;
-          _bankManualController = TextEditingController();
+          // Set Controller
+          _nomorRekeningController = TextEditingController(text: rekNo);
+          _namaPemilikRekeningController = TextEditingController(text: owner);
+
+          // Cek apakah bank ada di list dropdown
+          if (_daftarBank.contains(bankName)) {
+            _bankTerpilih = bankName;
+          } else {
+            _bankTerpilih = 'Lainnya';
+            _bankManualController.text = bankName;
+          }
         } else {
-          _bankTerpilih = 'Lainnya';
-          _bankManualController = TextEditingController(text: bankName);
+          _resetRekeningControllers();
         }
-        _nomorRekeningController = TextEditingController(text: rekNo);
-        _namaPemilikRekeningController = TextEditingController(text: owner);
       } catch (e) {
-        _resetRekeningControllers(); // Jika format lama tidak cocok
+        _resetRekeningControllers();
       }
     } else {
       _resetRekeningControllers();
@@ -86,63 +101,71 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
     _nomorRekeningController = TextEditingController();
     _namaPemilikRekeningController = TextEditingController();
     _bankManualController = TextEditingController();
+    _bankTerpilih = null;
   }
 
+  // Helper untuk format teks Title Case
   String _capitalize(String value) {
     if (value.trim().isEmpty) return "";
     return value.split(' ').map((word) {
       if (word.isEmpty) return "";
-      return word[0].toUpperCase() + word.substring(1).toLowerCase();
+      return "${word[0].toUpperCase()}${word.substring(1).toLowerCase()}";
     }).join(' ');
   }
 
-  // UBAH: Logika Update ke Server
+  // --- LOGIKA UPDATE KE SERVER ---
   void _updateNasabah() async {
     if (!_formKey.currentState!.validate() || _isLoading) return;
+
     setState(() => _isLoading = true);
 
-    String namaBank = _bankTerpilih == 'Lainnya'
-        ? _capitalize(_bankManualController.text.trim())
-        : (_bankTerpilih ?? '-');
-
-    String infoRekening = "";
-    if (_tambahRekening) {
-      infoRekening =
-          "$namaBank | ${_nomorRekeningController.text} a/n ${_capitalize(_namaPemilikRekeningController.text)}";
-    }
-
-    Map<String, dynamic> dataUpdate = {
-      'id': widget.nasabah['id'], // Penting: ID Database Server
-      'nik': _nikController.text.trim().toUpperCase(),
-      'nama': _capitalize(_namaController.text.trim()),
-      'telepon': _teleponController.text.trim(),
-      'alamat': _capitalize(_alamatController.text.trim()),
-      'rekening_bank': infoRekening,
-      'status': _selectedStatus,
-      // 'updated_at': DateTime.now().toString(), // Server biasanya handle otomatis
-    };
-
     try {
-      // UBAH: Panggil API Update
+      // 1. Siapkan String Rekening
+      String infoRekening = "";
+      if (_tambahRekening) {
+        String namaBank = _bankTerpilih == 'Lainnya'
+            ? _bankManualController.text.trim().toUpperCase()
+            : (_bankTerpilih ?? '-');
+
+        infoRekening =
+            "$namaBank | ${_nomorRekeningController.text} a/n ${_capitalize(_namaPemilikRekeningController.text)}";
+      }
+
+      // 2. Siapkan Data Map untuk API
+      Map<String, dynamic> dataUpdate = {
+        'id': widget.nasabah['id'], // ID WAJIB ADA UNTUK UPDATE
+        'nik': _nikController.text.trim().toUpperCase(),
+        'nama': _capitalize(_namaController.text.trim()),
+        'telepon': _teleponController.text.trim(),
+        'alamat': _capitalize(_alamatController.text.trim()),
+        'rekening_bank': infoRekening,
+        'status': _selectedStatus,
+      };
+
+      // 3. Panggil API
       final success = await _apiService.updateAnggota(dataUpdate);
 
       if (mounted) {
         if (success) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-                content: Text('Data Berhasil Diperbarui di Server!'),
+                content: Text('Data Berhasil Diperbarui!'),
                 backgroundColor: Colors.green),
           );
-          Navigator.pop(context, true); // Kembali dengan sinyal refresh
+          Navigator.pop(context, true); // Kembali & Refresh halaman sebelumnya
         } else {
-          throw Exception("Gagal update data");
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Gagal mengupdate data. Cek koneksi server.'),
+                backgroundColor: Colors.red),
+          );
         }
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('Gagal Update: Cek koneksi internet'),
+              content: Text('Terjadi Kesalahan: $e'),
               backgroundColor: Colors.red),
         );
       }
@@ -155,7 +178,7 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Edit Anggota (Online)'),
+        title: const Text('Edit Anggota'),
         backgroundColor: const Color(0xFF2E7D32),
         foregroundColor: Colors.white,
       ),
@@ -167,23 +190,27 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
                 key: _formKey,
                 child: Column(
                   children: [
+                    // --- STATUS KEANGGOTAAN ---
                     DropdownButtonFormField<String>(
                       value: _selectedStatus,
                       decoration: const InputDecoration(
                           labelText: 'Status Keanggotaan',
-                          border: OutlineInputBorder()),
-                      items: ['Aktif', 'Suspend', 'Blok']
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.verified_user)),
+                      items: ['Aktif', 'Non-Aktif', 'Blacklist']
                           .map(
                               (s) => DropdownMenuItem(value: s, child: Text(s)))
                           .toList(),
                       onChanged: (v) => setState(() => _selectedStatus = v!),
                     ),
                     const SizedBox(height: 16),
+
+                    // --- DATA PRIBADI ---
                     TextFormField(
                       controller: _nikController,
                       textCapitalization: TextCapitalization.characters,
                       decoration: const InputDecoration(
-                          labelText: 'NIK / ID',
+                          labelText: 'NIK / ID (KTP)',
                           border: OutlineInputBorder(),
                           prefixIcon: Icon(Icons.badge)),
                     ),
@@ -217,46 +244,38 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
                           border: OutlineInputBorder(),
                           prefixIcon: Icon(Icons.home)),
                     ),
-                    const SizedBox(height: 8),
+
+                    const SizedBox(height: 20),
+                    const Divider(thickness: 2),
+
+                    // --- DATA REKENING ---
                     SwitchListTile(
-                      title: const Text('Gunakan Nomor Rekening Bank'),
+                      title: const Text('Data Rekening Bank',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle:
+                          const Text("Aktifkan jika nasabah memiliki rekening"),
                       value: _tambahRekening,
                       activeColor: const Color(0xFF2E7D32),
                       onChanged: (bool value) =>
                           setState(() => _tambahRekening = value),
                     ),
+
                     if (_tambahRekening) ...[
-                      const Divider(),
-                      TextFormField(
-                        controller: _namaPemilikRekeningController,
-                        textCapitalization: TextCapitalization.words,
-                        decoration: const InputDecoration(
-                            labelText: 'Nama Atas Nama Rekening',
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.person_pin)),
-                      ),
-                      const SizedBox(height: 16),
-                      if (_bankTerpilih == 'Lainnya') ...[
-                        TextFormField(
-                          controller: _bankManualController,
-                          textCapitalization: TextCapitalization.words,
-                          decoration: const InputDecoration(
-                              labelText: 'Masukkan Nama Bank Manual',
-                              border: OutlineInputBorder(),
-                              prefixIcon: Icon(Icons.edit_note)),
-                        ),
-                        const SizedBox(height: 16),
-                      ],
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            flex: 2,
-                            child: DropdownButtonFormField<String>(
+                      Container(
+                        padding: const EdgeInsets.all(15),
+                        decoration: BoxDecoration(
+                            color: Colors.grey[50],
+                            border: Border.all(color: Colors.grey[300]!),
+                            borderRadius: BorderRadius.circular(10)),
+                        child: Column(
+                          children: [
+                            DropdownButtonFormField<String>(
                               value: _bankTerpilih,
                               decoration: const InputDecoration(
-                                  labelText: 'Bank',
-                                  border: OutlineInputBorder()),
+                                  labelText: 'Pilih Bank',
+                                  border: OutlineInputBorder(),
+                                  filled: true,
+                                  fillColor: Colors.white),
                               items: _daftarBank
                                   .map((bank) => DropdownMenuItem(
                                       value: bank, child: Text(bank)))
@@ -264,22 +283,50 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
                               onChanged: (v) =>
                                   setState(() => _bankTerpilih = v),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            flex: 3,
-                            child: TextFormField(
+                            if (_bankTerpilih == 'Lainnya') ...[
+                              const SizedBox(height: 10),
+                              TextFormField(
+                                controller: _bankManualController,
+                                textCapitalization:
+                                    TextCapitalization.characters,
+                                decoration: const InputDecoration(
+                                    labelText: 'Ketik Nama Bank',
+                                    border: OutlineInputBorder(),
+                                    filled: true,
+                                    fillColor: Colors.white,
+                                    prefixIcon: Icon(Icons.account_balance)),
+                              ),
+                            ],
+                            const SizedBox(height: 10),
+                            TextFormField(
                               controller: _nomorRekeningController,
                               keyboardType: TextInputType.number,
                               decoration: const InputDecoration(
-                                  labelText: 'No. Rekening',
-                                  border: OutlineInputBorder()),
+                                  labelText: 'Nomor Rekening',
+                                  border: OutlineInputBorder(),
+                                  filled: true,
+                                  fillColor: Colors.white,
+                                  prefixIcon: Icon(Icons.credit_card)),
                             ),
-                          ),
-                        ],
+                            const SizedBox(height: 10),
+                            TextFormField(
+                              controller: _namaPemilikRekeningController,
+                              textCapitalization: TextCapitalization.words,
+                              decoration: const InputDecoration(
+                                  labelText: 'Atas Nama (Pemilik Rekening)',
+                                  border: OutlineInputBorder(),
+                                  filled: true,
+                                  fillColor: Colors.white,
+                                  prefixIcon: Icon(Icons.person_pin)),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
+
                     const SizedBox(height: 32),
+
+                    // --- TOMBOL SIMPAN ---
                     SizedBox(
                       width: double.infinity,
                       height: 50,
@@ -287,10 +334,18 @@ class _EditAnggotaPageState extends State<EditAnggotaPage> {
                         onPressed: _isLoading ? null : _updateNasabah,
                         style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF2E7D32),
-                            foregroundColor: Colors.white),
-                        child: const Text('UPDATE DATA NASABAH'),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10))),
+                        child: _isLoading
+                            ? const CircularProgressIndicator(
+                                color: Colors.white)
+                            : const Text('SIMPAN PERUBAHAN',
+                                style: TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 16)),
                       ),
                     ),
+                    const SizedBox(height: 20),
                   ],
                 ),
               ),

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../data/db_helper.dart';
+import '../../services/api_service.dart';
 
 class DetailBagiHasilAnggotaPage extends StatefulWidget {
   final int nasabahId;
@@ -13,17 +13,19 @@ class DetailBagiHasilAnggotaPage extends StatefulWidget {
 
 class _DetailBagiHasilAnggotaPageState
     extends State<DetailBagiHasilAnggotaPage> {
-  final DbHelper _dbHelper = DbHelper();
+  final ApiService _apiService = ApiService();
+
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<Map<String, dynamic>> _dataAkad = [];
+  List<dynamic> _dataAkad = [];
   bool _isLoading = true;
 
   // Variabel Header Statistik
-  double _totalModalDisalurkan = 0; // "Hutang" Bagi Hasil
-  double _totalKeuntunganUsaha = 0; // Total Omzet Nasabah
-  double _totalBagiHasilBMT = 0; // Masuk ke BMT
+  double _totalModalDisalurkan = 0;
+  double _totalKeuntunganUsaha = 0;
+  double _totalBagiHasilBMT = 0;
+  double _totalBagiHasilNasabah = 0;
 
   @override
   void initState() {
@@ -31,160 +33,183 @@ class _DetailBagiHasilAnggotaPageState
     _loadData();
   }
 
+  // --- 2. LOAD DATA DARI API ---
   Future<void> _loadData() async {
-    final db = await _dbHelper.database;
+    setState(() {
+      _isLoading = true;
+      _totalModalDisalurkan = 0;
+      _totalKeuntunganUsaha = 0;
+      _totalBagiHasilBMT = 0;
+      _totalBagiHasilNasabah = 0;
+      _dataAkad = [];
+    });
 
-    // 1. Ambil Akad
-    final akadList = await db.query(
-      'mudharabah_akad',
-      where: 'nasabah_id = ?',
-      whereArgs: [widget.nasabahId],
-      orderBy: 'id DESC',
-    );
+    try {
+      final responseAkad = await _apiService.getMudharabah();
 
-    double tempModal = 0;
-    double tempKeuntungan = 0;
-    double tempBagiHasil = 0;
+      if (responseAkad['status'] == true && responseAkad['data'] is List) {
+        List<dynamic> allAkad = responseAkad['data'];
 
-    // 2. Hitung Total & Ambil Data Transaksi
-    for (var akad in akadList) {
-      if (akad['status'] == 'Disetujui' || akad['status'] == 'Aktif') {
-        tempModal += (akad['nominal_modal'] as num?)?.toDouble() ?? 0;
+        List<dynamic> myAkad = allAkad
+            .where((item) =>
+                item['nasabah_id'].toString() == widget.nasabahId.toString())
+            .toList();
+
+        double tempModal = 0;
+        double tempKeuntungan = 0;
+        double tempBagiHasilBMT = 0;
+        double tempBagiHasilNasabah = 0;
+
+        for (var akad in myAkad) {
+          // A. Hitung Modal Disalurkan
+          String status = akad['status'] ?? '';
+          if (status == 'Disetujui' || status == 'Aktif') {
+            double modal = double.tryParse(akad['modal'].toString()) ??
+                double.tryParse(akad['nominal_modal'].toString()) ??
+                0;
+            tempModal += modal;
+          }
+
+          // B. Hitung Keuntungan dari Riwayat Transaksi
+          try {
+            int akadId = int.parse(akad['id'].toString());
+            List<dynamic> riwayat =
+                await _apiService.getRiwayatBagiHasil(akadId);
+
+            for (var tr in riwayat) {
+              tempKeuntungan +=
+                  double.tryParse(tr['total_keuntungan'].toString()) ?? 0;
+              tempBagiHasilBMT +=
+                  double.tryParse(tr['bagian_bmt'].toString()) ?? 0;
+              tempBagiHasilNasabah +=
+                  double.tryParse(tr['bagian_nasabah'].toString()) ?? 0;
+            }
+          } catch (e) {
+            debugPrint("Gagal hitung riwayat akad ID ${akad['id']}");
+          }
+        }
+
+        if (mounted) {
+          setState(() {
+            _dataAkad = myAkad;
+            _totalModalDisalurkan = tempModal;
+            _totalKeuntunganUsaha = tempKeuntungan;
+            _totalBagiHasilBMT = tempBagiHasilBMT;
+            _totalBagiHasilNasabah = tempBagiHasilNasabah;
+            _isLoading = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _isLoading = false);
       }
-
-      final transaksiList = await db.query(
-        'mudharabah_transaksi',
-        where: 'akad_id = ?',
-        whereArgs: [akad['id']],
-      );
-
-      for (var tr in transaksiList) {
-        tempKeuntungan += (tr['total_keuntungan'] as num?)?.toDouble() ?? 0;
-        tempBagiHasil += (tr['bagian_bmt'] as num?)?.toDouble() ?? 0;
-      }
-    }
-
-    if (mounted) {
-      setState(() {
-        _dataAkad = akadList;
-        _totalModalDisalurkan = tempModal;
-        _totalKeuntunganUsaha = tempKeuntungan;
-        _totalBagiHasilBMT = tempBagiHasil;
-        _isLoading = false;
-      });
+    } catch (e) {
+      debugPrint("Error load bagi hasil: $e");
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  // --- FUNGSI MENAMPILKAN RIWAYAT TRANSAKSI (POP-UP BAWAH) ---
+  // --- 3. FUNGSI RIWAYAT TRANSAKSI ---
   void _showRiwayatTransaksi(Map<String, dynamic> akad) async {
-    final db = await _dbHelper.database;
+    try {
+      int akadId = int.parse(akad['id'].toString());
+      final riwayat = await _apiService.getRiwayatBagiHasil(akadId);
 
-    // Pastikan nama tabel benar: 'mudharabah_transaksi'
-    final riwayat = await db.query(
-      'mudharabah_transaksi',
-      where: 'akad_id = ?',
-      whereArgs: [akad['id']],
-      orderBy: 'id DESC',
-    );
+      if (!mounted) return;
 
-    if (!mounted) return;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) {
-        return Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Center(
-                child: Container(
-                  width: 50,
-                  height: 5,
-                  decoration: BoxDecoration(
-                      color: Colors.grey[300],
-                      borderRadius: BorderRadius.circular(10)),
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.white,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        builder: (context) {
+          return Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Center(
+                  child: Container(
+                    width: 50,
+                    height: 5,
+                    decoration: BoxDecoration(
+                        color: Colors.grey[300],
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 15),
-              Text("Riwayat: ${akad['nama_usaha']}",
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 18)),
-              const Divider(),
-              Expanded(
-                child: riwayat.isEmpty
-                    ? const Center(
-                        child: Text("Belum ada transaksi bagi hasil",
-                            style: TextStyle(color: Colors.grey)))
-                    : ListView.separated(
-                        itemCount: riwayat.length,
-                        separatorBuilder: (ctx, i) => const Divider(),
-                        itemBuilder: (context, index) {
-                          final item = riwayat[index];
+                const SizedBox(height: 15),
+                Text("Riwayat: ${akad['nama_usaha']}",
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 18)),
+                const Divider(),
+                Expanded(
+                  child: riwayat.isEmpty
+                      ? const Center(
+                          child: Text("Belum ada transaksi bagi hasil",
+                              style: TextStyle(color: Colors.grey)))
+                      : ListView.separated(
+                          itemCount: riwayat.length,
+                          separatorBuilder: (ctx, i) => const Divider(),
+                          itemBuilder: (context, index) {
+                            final item = riwayat[index];
+                            String tgl = item['tgl_transaksi'] ?? '-';
 
-                          // --- PERBAIKAN DI SINI (SOLUSI ERROR) ---
-                          // 1. Ambil sebagai Object/var dulu
-                          var rawTgl = item['tgl_transaksi'];
+                            double keuntunganTotal = double.tryParse(
+                                    item['total_keuntungan'].toString()) ??
+                                0;
+                            double bagianBmt = double.tryParse(
+                                    item['bagian_bmt'].toString()) ??
+                                0;
+                            double bagianNasabah = double.tryParse(
+                                    item['bagian_nasabah'].toString()) ??
+                                0;
 
-                          // 2. Konversi paksa ke String agar tidak error type mismatch
-                          String tgl = rawTgl != null ? rawTgl.toString() : '-';
-
-                          // Ambil data angka dengan aman
-                          double keuntunganTotal =
-                              (item['total_keuntungan'] as num?)?.toDouble() ??
-                                  0;
-                          double bagianBmt =
-                              (item['bagian_bmt'] as num?)?.toDouble() ?? 0;
-                          double bagianNasabah =
-                              (item['bagian_nasabah'] as num?)?.toDouble() ?? 0;
-                          // ----------------------------------------
-
-                          return ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                  color: Colors.purple.withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(8)),
-                              child: const Icon(Icons.payments,
-                                  color: Colors.purple, size: 20),
-                            ),
-                            title: Text(
-                              "BMT: ${_formatter.format(bagianBmt)}",
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.green),
-                            ),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                    "Total Omzet: ${_formatter.format(keuntunganTotal)}"),
-                                Text(
-                                    "Nasabah: ${_formatter.format(bagianNasabah)}",
-                                    style: const TextStyle(
-                                        fontSize: 11, color: Colors.grey)),
-                              ],
-                            ),
-                            trailing: Text(
-                              tgl,
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                          );
-                        },
-                      ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
+                            return ListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              leading: Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                    color: Colors.purple.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(8)),
+                                child: const Icon(Icons.payments,
+                                    color: Colors.purple, size: 20),
+                              ),
+                              title: Text(
+                                "BMT: ${_formatter.format(bagianBmt)}",
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.green),
+                              ),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                      "Total Omzet: ${_formatter.format(keuntunganTotal)}"),
+                                  Text(
+                                      "Nasabah: ${_formatter.format(bagianNasabah)}",
+                                      style: const TextStyle(
+                                          fontSize: 11, color: Colors.grey)),
+                                ],
+                              ),
+                              trailing: Text(
+                                tgl,
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          );
+        },
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Gagal memuat riwayat transaksi")));
+    }
   }
 
   @override
@@ -201,7 +226,7 @@ class _DetailBagiHasilAnggotaPageState
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
-                // --- 1. HEADER SUMMARY ---
+                // --- HEADER SUMMARY (DIPERBARUI) ---
                 Container(
                   padding: const EdgeInsets.fromLTRB(20, 10, 20, 25),
                   decoration: BoxDecoration(
@@ -213,6 +238,7 @@ class _DetailBagiHasilAnggotaPageState
                   ),
                   child: Column(
                     children: [
+                      // 1. Modal Disalurkan
                       const Text("Total Modal Disalurkan",
                           style:
                               TextStyle(color: Colors.white70, fontSize: 12)),
@@ -224,57 +250,41 @@ class _DetailBagiHasilAnggotaPageState
                             fontWeight: FontWeight.bold,
                             color: Colors.white),
                       ),
+
+                      const SizedBox(height: 8),
+
+                      // 2. Total Omzet (DIPINDAHKAN KESINI)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(20)),
+                        child: Text(
+                          "Total Omzet Usaha: ${_formatter.format(_totalKeuntunganUsaha)}",
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500),
+                        ),
+                      ),
+
                       const SizedBox(height: 20),
+
+                      // 3. Row Pembagian (Hanya 2 Kolom Sekarang)
                       Row(
                         children: [
+                          // Keuntungan Nasabah
                           Expanded(
-                            child: Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.15),
-                                  borderRadius: BorderRadius.circular(12)),
-                              child: Column(
-                                children: [
-                                  const Text("Total Keuntungan",
-                                      style: TextStyle(
-                                          color: Colors.white70, fontSize: 11)),
-                                  const SizedBox(height: 5),
-                                  Text(
-                                    _formatter.format(_totalKeuntunganUsaha),
-                                    style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 13),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ],
-                              ),
-                            ),
+                            child: _buildInfoBox("Keuntungan\nNasabah",
+                                _totalBagiHasilNasabah, Colors.orangeAccent),
                           ),
                           const SizedBox(width: 10),
+
+                          // Keuntungan BMT
                           Expanded(
-                            child: Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.15),
-                                  borderRadius: BorderRadius.circular(12)),
-                              child: Column(
-                                children: [
-                                  const Text("Masuk BMT",
-                                      style: TextStyle(
-                                          color: Colors.white70, fontSize: 11)),
-                                  const SizedBox(height: 5),
-                                  Text(
-                                    _formatter.format(_totalBagiHasilBMT),
-                                    style: const TextStyle(
-                                        color: Colors.greenAccent,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 13),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ],
-                              ),
-                            ),
+                            child: _buildInfoBox("Bagian\nBMT",
+                                _totalBagiHasilBMT, Colors.greenAccent),
                           ),
                         ],
                       )
@@ -296,7 +306,7 @@ class _DetailBagiHasilAnggotaPageState
                 ),
                 const SizedBox(height: 5),
 
-                // --- 2. LIST AKAD ---
+                // --- LIST AKAD ---
                 Expanded(
                   child: _dataAkad.isEmpty
                       ? const Center(
@@ -308,11 +318,25 @@ class _DetailBagiHasilAnggotaPageState
                               const SizedBox(height: 10),
                           itemBuilder: (context, index) {
                             final item = _dataAkad[index];
+                            String namaUsaha = item['nama_usaha'] ?? 'Usaha';
+                            String status = item['status'] ?? '-';
+                            double modal =
+                                double.tryParse(item['modal'].toString()) ??
+                                    double.tryParse(
+                                        item['nominal_modal'].toString()) ??
+                                    0;
 
-                            // Logika Warna Status
-                            Color statusColor = item['status'] == 'Disetujui'
-                                ? Colors.green
-                                : Colors.orange;
+                            double nisbahNasabah = double.tryParse(
+                                    item['nisbah_nasabah'].toString()) ??
+                                0;
+                            double nisbahBmt = double.tryParse(
+                                    item['nisbah_bmt'].toString()) ??
+                                0;
+
+                            Color statusColor =
+                                status == 'Disetujui' || status == 'Aktif'
+                                    ? Colors.green
+                                    : Colors.orange;
 
                             return Card(
                               elevation: 2,
@@ -327,23 +351,22 @@ class _DetailBagiHasilAnggotaPageState
                                   child: Icon(Icons.store,
                                       color: Colors.purple[700]),
                                 ),
-                                title: Text(item['nama_usaha'] ?? 'Usaha',
+                                title: Text(namaUsaha,
                                     style: const TextStyle(
                                         fontWeight: FontWeight.bold)),
                                 subtitle: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     const SizedBox(height: 4),
+                                    Text("Modal: ${_formatter.format(modal)}"),
                                     Text(
-                                        "Modal: ${_formatter.format(item['nominal_modal'] ?? 0)}"),
-                                    Text(
-                                        "Nisbah: ${(item['nisbah_nasabah'] ?? 0).toInt()} : ${(item['nisbah_bmt'] ?? 0).toInt()} (N:B)"),
+                                        "Nisbah: ${nisbahNasabah.toInt()} : ${nisbahBmt.toInt()} (N:B)"),
                                   ],
                                 ),
                                 trailing: Column(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Text(item['status'] ?? '-',
+                                    Text(status,
                                         style: TextStyle(
                                             color: statusColor,
                                             fontWeight: FontWeight.bold,
@@ -360,6 +383,31 @@ class _DetailBagiHasilAnggotaPageState
                 ),
               ],
             ),
+    );
+  }
+
+  // Helper Widget untuk Kotak Info Kecil
+  Widget _buildInfoBox(String label, double nominal, Color valueColor) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        children: [
+          Text(label,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  color: Colors.white70, fontSize: 11, height: 1.2)),
+          const SizedBox(height: 5),
+          Text(
+            _formatter.format(nominal),
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                color: valueColor, fontWeight: FontWeight.bold, fontSize: 14),
+          ),
+        ],
+      ),
     );
   }
 }

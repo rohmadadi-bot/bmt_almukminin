@@ -780,19 +780,40 @@ class ApiService {
     }
   }
 
-  // C. Proses Bagi Hasil
-  Future<bool> prosesBagiHasil(Map<String, dynamic> data) async {
+  // C. Proses Bagi Hasil (UPDATED: Return Map agar pesan error bisa tampil di UI)
+  Future<Map<String, dynamic>> prosesBagiHasil(
+      Map<String, dynamic> data) async {
     try {
+      print("--- DEBUG BAGI HASIL ---");
+      print("URL: $baseUrl/usaha_laporan.php");
+      print("Data Dikirim: $data");
+
       data['action'] = 'proses_bagi_hasil';
+
       final response = await http.post(
         Uri.parse('$baseUrl/usaha_laporan.php'),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode(data),
       );
-      final result = jsonDecode(response.body);
-      return result['status'];
+
+      print("Status Code: ${response.statusCode}");
+      print("Response Body: ${response.body}");
+
+      if (response.statusCode == 200) {
+        final result = jsonDecode(response.body);
+        // Mengembalikan Map lengkap (status & message)
+        return {
+          "status": result['status'] ?? false,
+          "message": result['message'] ?? "Gagal tanpa pesan error"
+        };
+      }
+      return {
+        "status": false,
+        "message": "Server Error: ${response.statusCode}"
+      };
     } catch (e) {
-      return false;
+      print("ERROR EXCEPTION: $e");
+      return {"status": false, "message": "Koneksi Error: $e"};
     }
   }
 
@@ -808,6 +829,96 @@ class ApiService {
       return result['status'];
     } catch (e) {
       return false;
+    }
+  }
+
+  // --- TAMBAHAN: HAPUS ANGGOTA ---
+  Future<bool> deleteAnggota(int id) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/anggota.php'),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"action": "delete", "id": id}),
+      );
+      final result = jsonDecode(response.body);
+      return result['status'] == true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // --- TAMBAHAN DI API SERVICE: Get Riwayat Angsuran Spesifik ---
+  Future<List<dynamic>> getRiwayatAngsuranMurabahah(int akadId) async {
+    try {
+      // Pastikan backend PHP Anda mendukung action 'get_riwayat' di transaksi_jual_beli.php
+      // Atau sesuaikan dengan endpoint yang tersedia
+      final response = await http.post(
+        Uri.parse('$baseUrl/transaksi_jual_beli.php'),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"action": "get_riwayat", "akad_id": akadId}),
+      );
+
+      if (response.statusCode == 200) {
+        final result = jsonDecode(response.body);
+        // Cek jika returnnya list langsung atau dibungkus 'data'
+        if (result is List) return result;
+        if (result['data'] != null) return result['data'];
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // --- TAMBAHAN DI API SERVICE: Get Riwayat Cicilan Pinjaman ---
+  Future<List<dynamic>> getRiwayatCicilanPinjaman(int pinjamanId) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/transaksi_pinjaman_lunak.php'),
+        headers: {"Content-Type": "application/json"},
+        // Pastikan PHP Anda menangani action 'get_riwayat' atau sesuaikan
+        body: jsonEncode({"action": "get_riwayat", "pinjaman_id": pinjamanId}),
+      );
+
+      if (response.statusCode == 200) {
+        final result = jsonDecode(response.body);
+        // Handle jika return langsung list atau dibungkus 'data'
+        if (result is List) return result;
+        if (result['data'] != null) return result['data'];
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // --- TAMBAHAN DI API SERVICE: Get Modal Usaha Per Nasabah ---
+  Future<List<dynamic>> getModalUsahaByNasabah(String namaNasabah) async {
+    try {
+      // Endpoint ini asumsinya mengambil semua data modal, nanti difilter di aplikasi
+      // Atau idealnya buat endpoint khusus di PHP: usaha_modal.php?action=get_by_nasabah&nama=...
+
+      // SEMENTARA: Kita pakai getModalUsaha() yg sudah ada, tapi itu butuh usaha_id.
+      // JADI KITA BUAT SOLUSI ALTERNATIF: Ambil semua usaha, lalu loop ambil modalnya.
+      // TAPI ITU BERAT.
+
+      // SOLUSI TERBAIK: Tambahkan action baru di PHP atau gunakan endpoint custom.
+      // Di sini saya gunakan simulasi ambil data via POST custom jika backend mendukung.
+
+      final response = await http.post(
+        Uri.parse('$baseUrl/usaha_modal.php'),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode(
+            {"action": "get_by_nasabah_name", "nama_nasabah": namaNasabah}),
+      );
+
+      if (response.statusCode == 200) {
+        final result = jsonDecode(response.body);
+        if (result['data'] != null) return result['data'];
+      }
+      return [];
+    } catch (e) {
+      return [];
     }
   }
 }

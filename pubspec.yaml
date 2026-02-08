@@ -23,6 +23,7 @@ dependencies:
   firebase_analytics: ^12.1.1
   googleapis: ^13.0.0
   http: ^1.2.0
+  google_fonts: ^6.1.0
   extension_google_sign_in_as_googleapis_auth: ^2.0.12
   flutter_localizations:
     sdk: flutter
