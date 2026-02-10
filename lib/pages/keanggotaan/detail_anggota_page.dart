@@ -196,27 +196,52 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
     }
   }
 
-  // --- 4. LOAD SUMMARY PINJAMAN ---
+// --- LOGIKA HITUNG SUMMARY PINJAMAN LUNAK (DIPERBAIKI) ---
   Future<void> _loadPinjamanSummary() async {
     try {
+      // 1. Ambil Data Pinjaman dari API
       final response = await _apiService.getPinjamanLunak();
-      if (response['status'] == true && response['data'] != null) {
-        List<dynamic> list = response['data'];
-        var myPinjaman = list.where((e) =>
-            e['nasabah_id'].toString() == _currentNasabah['id'].toString());
+
+      if (response['status'] == true && response['data'] is List) {
+        List<dynamic> allPinjaman = response['data'];
+
+        // 2. Filter milik nasabah ini
+        List<dynamic> myPinjaman = allPinjaman
+            .where((item) =>
+                item['nasabah_id'].toString() ==
+                _currentNasabah['id'].toString())
+            .toList();
 
         double tempPlafond = 0;
         double tempSisa = 0;
+        double tempBayar = 0;
 
         for (var p in myPinjaman) {
-          if (p['status'] == 'Disetujui' || p['status'] == 'Lunas') {
-            double nominal = double.parse(p['nominal'].toString());
-            double sisa = p['sisa_pinjaman'] != null
-                ? double.parse(p['sisa_pinjaman'].toString())
-                : nominal;
+          int pinjamanId = int.tryParse(p['id'].toString()) ?? 0;
+          double nominal = double.tryParse(p['nominal'].toString()) ?? 0.0;
+          String status = (p['status'] ?? '').toString().toLowerCase();
 
+          // Hanya hitung yang aktif (Disetujui/Lunas)
+          if (status == 'disetujui' || status == 'lunas' || status == 'aktif') {
+            // --- LOGIKA UTAMA (Sesuai Halaman Detail Transaksi) ---
+            // Ambil SISA REAL langsung dari Server (API)
+            double sisaReal = 0;
+            try {
+              sisaReal = await _apiService.getSisaPinjaman(pinjamanId);
+            } catch (e) {
+              sisaReal = nominal; // Fallback jika error, dianggap belum bayar
+            }
+
+            // Hitung Sudah Bayar = Nominal - Sisa
+            double bayarReal = nominal - sisaReal;
+
+            // Pencegahan nilai minus jika data server tidak sinkron
+            if (bayarReal < 0) bayarReal = 0;
+
+            // Akumulasi ke Total Statistik
             tempPlafond += nominal;
-            tempSisa += sisa;
+            tempSisa += sisaReal;
+            tempBayar += bayarReal;
           }
         }
 
@@ -224,12 +249,12 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
           setState(() {
             _pinjamanTotalPlafond = tempPlafond;
             _pinjamanSisaTagihan = tempSisa;
-            _pinjamanSudahBayar = tempPlafond - tempSisa;
+            _pinjamanSudahBayar = tempBayar; // Data ini sekarang akurat
           });
         }
       }
     } catch (e) {
-      debugPrint("Error load pinjaman API: $e");
+      debugPrint("Error load pinjaman summary: $e");
     }
   }
 
@@ -607,7 +632,7 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text("Sisa Kewajiban Murabahah",
+                  const Text("Sisa Kewajiban Jual Beli",
                       style: TextStyle(color: Colors.white70)),
                   const SizedBox(height: 5),
                   Text(_formatter.format(_murabahahSisaKewajiban),
@@ -716,7 +741,7 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text("Total Modal Disalurkan",
+                  const Text("Total Modal Bagi Hasil Disalurkan",
                       style: TextStyle(color: Colors.white70)),
                   const SizedBox(height: 5),
                   Text(_formatter.format(_mudharabahTotalModal),
@@ -822,7 +847,7 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text("Total Pinjaman (Plafond)",
+                  const Text("Total Pinjaman Lunak (Plafond)",
                       style: TextStyle(color: Colors.white70)),
                   const SizedBox(height: 5),
                   Text(_formatter.format(_pinjamanTotalPlafond),
@@ -906,7 +931,7 @@ class _DetailAnggotaPageState extends State<DetailAnggotaPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text("Total Nilai Investasi",
+                  const Text("Total Nilai Investasi Usaha Bersama",
                       style: TextStyle(color: Colors.white70)),
                   const SizedBox(height: 5),
                   Text(_formatter.format(_usahaTotalInvestasi),

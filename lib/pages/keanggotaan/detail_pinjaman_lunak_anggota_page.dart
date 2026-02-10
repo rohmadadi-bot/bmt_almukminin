@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import '../../services/api_service.dart'; // Ganti DbHelper dengan ApiService
+import '../../services/api_service.dart';
 
 class DetailPinjamanLunakAnggotaPage extends StatefulWidget {
   final int nasabahId;
@@ -13,19 +13,17 @@ class DetailPinjamanLunakAnggotaPage extends StatefulWidget {
 
 class _DetailPinjamanLunakAnggotaPageState
     extends State<DetailPinjamanLunakAnggotaPage> {
-  // 1. Inisialisasi API Service
   final ApiService _apiService = ApiService();
-
   final NumberFormat _formatter =
       NumberFormat.currency(locale: 'id', symbol: 'Rp ', decimalDigits: 0);
 
-  List<dynamic> _dataPinjaman = []; // Ubah ke dynamic
+  List<Map<String, dynamic>> _dataPinjaman = [];
   bool _isLoading = true;
 
   // Variabel Header Statistik
   double _totalPinjamanDisalurkan = 0; // Total Plafond
-  double _totalCicilanMasuk = 0; // Sudah Bayar
-  double _totalSisaTagihan = 0; // Sisa Hutang
+  double _totalCicilanMasuk = 0; // Sudah Bayar (Dihitung dari Plafond - Sisa)
+  double _totalSisaTagihan = 0; // Sisa Hutang (Dari Server)
 
   @override
   void initState() {
@@ -33,71 +31,77 @@ class _DetailPinjamanLunakAnggotaPageState
     _loadData();
   }
 
-  // --- 2. LOAD DATA DARI API ---
-  Future<void> _loadData() async {
-    setState(() {
-      _isLoading = true;
-      _totalPinjamanDisalurkan = 0;
-      _totalCicilanMasuk = 0;
-      _totalSisaTagihan = 0;
-      _dataPinjaman = [];
-    });
+  Future<void> _loadData({bool isRefresh = false}) async {
+    if (!isRefresh) {
+      setState(() => _isLoading = true);
+    }
 
     try {
-      // Ambil semua data pinjaman
+      // Reset variabel hitungan
+      double tempTotalPinjaman = 0;
+      double tempTotalCicilan = 0;
+      double tempTotalSisa = 0;
+      List<Map<String, dynamic>> processedList = [];
+
+      // 1. Ambil Semua Data Pinjaman
       final response = await _apiService.getPinjamanLunak();
 
       if (response['status'] == true && response['data'] is List) {
         List<dynamic> allPinjaman = response['data'];
 
-        // Filter milik nasabah ini saja
+        // 2. Filter milik nasabah ini saja
         List<dynamic> myPinjaman = allPinjaman
             .where((item) =>
                 item['nasabah_id'].toString() == widget.nasabahId.toString())
             .toList();
 
-        List<Map<String, dynamic>> processedList = [];
-        double tempTotalPinjaman = 0;
-        double tempTotalCicilan = 0;
-
+        // 3. Loop setiap pinjaman
         for (var p in myPinjaman) {
-          // Parsing aman (String to Double)
+          int pinjamanId = int.tryParse(p['id'].toString()) ?? 0;
           double nominal = double.tryParse(p['nominal'].toString()) ?? 0.0;
-
-          // Cek apakah API kirim 'sisa_pinjaman' atau 'terbayar'
-          double sisa = 0;
-          double sudahBayar = 0;
-
-          if (p['sisa_pinjaman'] != null) {
-            sisa = double.tryParse(p['sisa_pinjaman'].toString()) ?? 0.0;
-            sudahBayar = nominal - sisa;
-          } else if (p['terbayar'] != null) {
-            sudahBayar = double.tryParse(p['terbayar'].toString()) ?? 0.0;
-            sisa = nominal - sudahBayar;
-          } else {
-            // Fallback jika API belum kirim perhitungan
-            // Asumsi sisa = nominal (belum bayar) kecuali status Lunas
-            if (p['status'] == 'Lunas') {
-              sisa = 0;
-              sudahBayar = nominal;
-            } else {
-              sisa = nominal;
-            }
-          }
-
           String status = p['status'] ?? 'Pengajuan';
 
-          // Update Statistik Header (Hanya yg Disetujui/Lunas)
-          if (status == 'Disetujui' || status == 'Lunas') {
-            tempTotalPinjaman += nominal;
-            tempTotalCicilan += sudahBayar;
+          // --- LOGIKA UTAMA (Sesuai Referensi Sheet Sukses) ---
+          // Kita ambil SISA TAGIHAN langsung dari server agar akurat.
+          // Rumus: Sudah Bayar = Nominal - Sisa Server.
+
+          double sisaReal = 0;
+          double sudahBayarHitungan = 0;
+
+          // Cek status agar tidak menghitung yang Ditolak/Pengajuan
+          String statusCheck = status.toLowerCase();
+          bool isAktif = (statusCheck == 'disetujui' ||
+              statusCheck == 'lunas' ||
+              statusCheck == 'aktif');
+
+          if (isAktif) {
+            try {
+              // Panggil API getSisaPinjaman (Data paling update dari server)
+              sisaReal = await _apiService.getSisaPinjaman(pinjamanId);
+
+              // Hitung yang sudah dibayar
+              sudahBayarHitungan = nominal - sisaReal;
+              if (sudahBayarHitungan < 0) sudahBayarHitungan = 0; // Cegah minus
+
+              // Tambahkan ke Total Header
+              tempTotalPinjaman += nominal;
+              tempTotalSisa += sisaReal;
+              tempTotalCicilan += sudahBayarHitungan;
+            } catch (e) {
+              debugPrint("Gagal ambil sisa ID $pinjamanId: $e");
+              // Fallback: anggap sisa = nominal jika error
+              sisaReal = nominal;
+            }
+          } else {
+            // Jika status Pengajuan/Ditolak, anggap sisa = nominal (belum jalan)
+            sisaReal = nominal;
           }
 
-          // Buat item baru untuk List
+          // Simpan data untuk list card
           var newItem = Map<String, dynamic>.from(p);
-          newItem['sisa'] = sisa;
-          newItem['sudah_bayar'] = sudahBayar;
-          newItem['nominal_angka'] = nominal; // Simpan versi double
+          newItem['sisa'] = sisaReal;
+          newItem['sudah_bayar'] = sudahBayarHitungan;
+          newItem['nominal_angka'] = nominal;
 
           processedList.add(newItem);
         }
@@ -105,9 +109,12 @@ class _DetailPinjamanLunakAnggotaPageState
         if (mounted) {
           setState(() {
             _dataPinjaman = processedList;
+
+            // Update Header dengan hasil akumulasi
             _totalPinjamanDisalurkan = tempTotalPinjaman;
+            _totalSisaTagihan = tempTotalSisa;
             _totalCicilanMasuk = tempTotalCicilan;
-            _totalSisaTagihan = tempTotalPinjaman - tempTotalCicilan;
+
             _isLoading = false;
           });
         }
@@ -115,18 +122,17 @@ class _DetailPinjamanLunakAnggotaPageState
         if (mounted) setState(() => _isLoading = false);
       }
     } catch (e) {
-      debugPrint("Error load data pinjaman: $e");
+      debugPrint("Error load data: $e");
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  // --- 3. SHOW RIWAYAT CICILAN (API VERSION) ---
+  // --- SHOW RIWAYAT CICILAN ---
   void _showRiwayatCicilan(Map<String, dynamic> pinjaman) async {
     try {
       int pinjamanId = int.parse(pinjaman['id'].toString());
-
-      // Panggil fungsi baru di ApiService
-      final riwayat = await _apiService.getRiwayatCicilanPinjaman(pinjamanId);
+      final List riwayat =
+          await _apiService.getRiwayatCicilanPinjaman(pinjamanId);
 
       if (!mounted) return;
 
@@ -147,7 +153,6 @@ class _DetailPinjamanLunakAnggotaPageState
                 ),
                 child: Column(
                   children: [
-                    // Handle Bar
                     Center(
                       child: Container(
                         margin: const EdgeInsets.only(top: 10, bottom: 5),
@@ -158,8 +163,6 @@ class _DetailPinjamanLunakAnggotaPageState
                             borderRadius: BorderRadius.circular(10)),
                       ),
                     ),
-
-                    // Header Bottom Sheet
                     Padding(
                       padding: const EdgeInsets.all(16.0),
                       child: Column(
@@ -181,8 +184,6 @@ class _DetailPinjamanLunakAnggotaPageState
                       ),
                     ),
                     const Divider(height: 1),
-
-                    // List Riwayat
                     Expanded(
                       child: riwayat.isEmpty
                           ? Center(
@@ -204,13 +205,10 @@ class _DetailPinjamanLunakAnggotaPageState
                                   const Divider(height: 1),
                               itemBuilder: (ctx, i) {
                                 final item = riwayat[i];
-
-                                // Parsing Data
                                 double bayar = double.tryParse(
                                         item['jumlah_bayar'].toString()) ??
                                     0.0;
                                 String tgl = item['tgl_bayar'] ?? '-';
-                                String ket = item['keterangan'] ?? '-';
 
                                 return ListTile(
                                   contentPadding: const EdgeInsets.symmetric(
@@ -223,25 +221,11 @@ class _DetailPinjamanLunakAnggotaPageState
                                   title: Text(_formatter.format(bayar),
                                       style: const TextStyle(
                                           fontWeight: FontWeight.bold)),
-                                  subtitle: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(tgl),
-                                      if (ket != '-' && ket.isNotEmpty)
-                                        Text(ket,
-                                            style: const TextStyle(
-                                                fontSize: 11,
-                                                fontStyle: FontStyle.italic,
-                                                color: Colors.grey)),
-                                    ],
-                                  ),
+                                  subtitle: Text(tgl),
                                 );
                               },
                             ),
                     ),
-
-                    // Tombol Tutup
                     Padding(
                       padding: const EdgeInsets.all(16.0),
                       child: SizedBox(
@@ -267,7 +251,6 @@ class _DetailPinjamanLunakAnggotaPageState
         },
       );
     } catch (e) {
-      debugPrint("Error detail cicilan: $e");
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Gagal memuat riwayat cicilan")),
       );
@@ -284,233 +267,267 @@ class _DetailPinjamanLunakAnggotaPageState
         foregroundColor: Colors.white,
         elevation: 0,
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                // --- 1. HEADER SUMMARY ---
-                Container(
-                  padding: const EdgeInsets.fromLTRB(20, 10, 20, 25),
-                  decoration: const BoxDecoration(
-                    color: Colors.orange,
-                    borderRadius: BorderRadius.only(
-                      bottomLeft: Radius.circular(30),
-                      bottomRight: Radius.circular(30),
-                    ),
-                  ),
-                  child: Column(
-                    children: [
-                      // Judul & Total Pinjaman
-                      const Text("Total Pinjaman (Plafond)",
-                          style:
-                              TextStyle(color: Colors.white70, fontSize: 12)),
-                      const SizedBox(height: 5),
-                      Text(
-                        _formatter.format(_totalPinjamanDisalurkan),
-                        style: const TextStyle(
-                            fontSize: 28,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          await _loadData(isRefresh: true);
+        },
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                child: Column(
+                  children: [
+                    // --- HEADER SUMMARY ---
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(20, 10, 20, 25),
+                      decoration: const BoxDecoration(
+                        color: Colors.orange,
+                        borderRadius: BorderRadius.only(
+                          bottomLeft: Radius.circular(30),
+                          bottomRight: Radius.circular(30),
+                        ),
                       ),
-                      const SizedBox(height: 20),
-
-                      // Row Statistik: Total Masuk & Sisa Tagihan
-                      Row(
+                      child: Column(
                         children: [
-                          // Kiri: Sudah Dibayar
-                          Expanded(
-                            child: Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.2),
-                                  borderRadius: BorderRadius.circular(12)),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text("Sudah Dibayar",
-                                      style: TextStyle(
-                                          color: Colors.white70, fontSize: 11)),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _formatter.format(_totalCicilanMasuk),
-                                    style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 14),
-                                  ),
-                                ],
-                              ),
-                            ),
+                          const Text("Total Pinjaman (Plafond)",
+                              style: TextStyle(
+                                  color: Colors.white70, fontSize: 12)),
+                          const SizedBox(height: 5),
+                          Text(
+                            _formatter.format(_totalPinjamanDisalurkan),
+                            style: const TextStyle(
+                                fontSize: 28,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white),
                           ),
-                          const SizedBox(width: 10),
-                          // Kanan: Sisa Tagihan
-                          Expanded(
-                            child: Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.2),
-                                  borderRadius: BorderRadius.circular(12)),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text("Sisa Tagihan",
-                                      style: TextStyle(
-                                          color: Colors.white70, fontSize: 11)),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _formatter.format(_totalSisaTagihan),
-                                    style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 14),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      )
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 15),
-                const Padding(
-                  padding: EdgeInsets.only(left: 16),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text("Riwayat Akad",
-                        style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.grey,
-                            fontSize: 16)),
-                  ),
-                ),
-                const SizedBox(height: 5),
-
-                // --- 2. LIST PINJAMAN ---
-                Expanded(
-                  child: _dataPinjaman.isEmpty
-                      ? const Center(
-                          child: Text("Tidak ada riwayat pinjaman",
-                              style: TextStyle(color: Colors.grey)))
-                      : ListView.separated(
-                          padding: const EdgeInsets.all(16),
-                          itemCount: _dataPinjaman.length,
-                          separatorBuilder: (ctx, i) =>
-                              const SizedBox(height: 10),
-                          itemBuilder: (context, index) {
-                            final item = _dataPinjaman[index];
-
-                            double nominal =
-                                item['nominal_angka']; // Pakai versi double
-                            double sisa = item['sisa'];
-                            String status = item['status'] ?? 'Pengajuan';
-
-                            // Warna status
-                            Color statusColor = Colors.grey;
-                            if (status == 'Disetujui')
-                              statusColor = Colors.orange;
-                            if (status == 'Lunas') statusColor = Colors.green;
-                            if (status == 'Ditolak') statusColor = Colors.red;
-
-                            return Card(
-                              elevation: 2,
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                  side: BorderSide(
-                                      color: statusColor.withOpacity(0.5))),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(12),
-                                onTap: () => _showRiwayatCicilan(item),
-                                child: Padding(
-                                  padding: const EdgeInsets.all(12.0),
+                          const SizedBox(height: 20),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                      color: Colors.white.withOpacity(0.2),
+                                      borderRadius: BorderRadius.circular(12)),
                                   child: Column(
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
                                     children: [
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Expanded(
-                                            child: Text(
-                                                item['deskripsi'] ?? 'Pinjaman',
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                    fontWeight: FontWeight.bold,
-                                                    fontSize: 16)),
-                                          ),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 8, vertical: 2),
-                                            decoration: BoxDecoration(
-                                                color: statusColor,
-                                                borderRadius:
-                                                    BorderRadius.circular(5)),
-                                            child: Text(status,
-                                                style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 10,
-                                                    fontWeight:
-                                                        FontWeight.bold)),
-                                          )
-                                        ],
-                                      ),
-                                      const SizedBox(height: 5),
-                                      Text(item['tgl_pengajuan'] ?? '-',
-                                          style: const TextStyle(
-                                              color: Colors.grey,
-                                              fontSize: 12)),
-                                      const Divider(),
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              const Text("Total Pinjaman",
-                                                  style: TextStyle(
-                                                      fontSize: 11,
-                                                      color: Colors.grey)),
-                                              Text(_formatter.format(nominal),
-                                                  style: const TextStyle(
-                                                      fontWeight:
-                                                          FontWeight.w500)),
-                                            ],
-                                          ),
-                                          Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.end,
-                                            children: [
-                                              const Text("Sisa Tagihan",
-                                                  style: TextStyle(
-                                                      fontSize: 11,
-                                                      color: Colors.grey)),
-                                              Text(_formatter.format(sisa),
-                                                  style: TextStyle(
-                                                      fontWeight:
-                                                          FontWeight.bold,
-                                                      fontSize: 15,
-                                                      color: sisa <= 0
-                                                          ? Colors.green
-                                                          : Colors.red)),
-                                            ],
-                                          ),
-                                        ],
+                                      const Text("Sudah Dibayar",
+                                          style: TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 11)),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        _formatter.format(_totalCicilanMasuk),
+                                        style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14),
                                       ),
                                     ],
                                   ),
                                 ),
                               ),
-                            );
-                          },
-                        ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                      color: Colors.white.withOpacity(0.2),
+                                      borderRadius: BorderRadius.circular(12)),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Text("Sisa Tagihan",
+                                          style: TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 11)),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        _formatter.format(_totalSisaTagihan),
+                                        style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          )
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 15),
+                    const Padding(
+                      padding: EdgeInsets.only(left: 16),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text("Riwayat Akad",
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.grey,
+                                fontSize: 16)),
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+
+                    // --- LIST PINJAMAN ---
+                    _dataPinjaman.isEmpty
+                        ? Padding(
+                            padding: const EdgeInsets.only(top: 50),
+                            child: const Center(
+                                child: Text("Tidak ada riwayat pinjaman",
+                                    style: TextStyle(color: Colors.grey))),
+                          )
+                        : ListView.separated(
+                            padding: const EdgeInsets.all(16),
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: _dataPinjaman.length,
+                            separatorBuilder: (ctx, i) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (context, index) {
+                              final item = _dataPinjaman[index];
+                              double nominal = item['nominal_angka'] ?? 0.0;
+                              double sisa = item['sisa'] ?? 0.0;
+                              // Hitung paid di level item juga agar tampil di list
+                              double paid = nominal - sisa;
+                              if (paid < 0) paid = 0;
+
+                              String status = item['status'] ?? 'Pengajuan';
+
+                              Color statusColor = Colors.grey;
+                              if (status == 'Disetujui')
+                                statusColor = Colors.orange;
+                              if (status == 'Lunas') statusColor = Colors.green;
+                              if (status == 'Ditolak') statusColor = Colors.red;
+
+                              return Card(
+                                elevation: 2,
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    side: BorderSide(
+                                        color: statusColor.withOpacity(0.5))),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(12),
+                                  onTap: () => _showRiwayatCicilan(item),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(12.0),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                  item['deskripsi'] ??
+                                                      'Pinjaman',
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: const TextStyle(
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      fontSize: 16)),
+                                            ),
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 8,
+                                                      vertical: 2),
+                                              decoration: BoxDecoration(
+                                                  color: statusColor,
+                                                  borderRadius:
+                                                      BorderRadius.circular(5)),
+                                              child: Text(status,
+                                                  style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 10,
+                                                      fontWeight:
+                                                          FontWeight.bold)),
+                                            )
+                                          ],
+                                        ),
+                                        const SizedBox(height: 5),
+                                        Text(item['tgl_pengajuan'] ?? '-',
+                                            style: const TextStyle(
+                                                color: Colors.grey,
+                                                fontSize: 12)),
+                                        const Divider(),
+                                        Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.spaceBetween,
+                                          children: [
+                                            Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                const Text("Total Pinjaman",
+                                                    style: TextStyle(
+                                                        fontSize: 11,
+                                                        color: Colors.grey)),
+                                                Text(_formatter.format(nominal),
+                                                    style: const TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.w500)),
+                                              ],
+                                            ),
+                                            // Menampilkan Sisa Tagihan di Kanan
+                                            Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.end,
+                                              children: [
+                                                const Text("Sisa Tagihan",
+                                                    style: TextStyle(
+                                                        fontSize: 11,
+                                                        color: Colors.grey)),
+                                                Text(_formatter.format(sisa),
+                                                    style: TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                        fontSize: 15,
+                                                        color: sisa <= 0
+                                                            ? Colors.green
+                                                            : Colors.red)),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                        // Opsional: Menampilkan progress bar pembayaran
+                                        if (nominal > 0) ...[
+                                          const SizedBox(height: 8),
+                                          LinearProgressIndicator(
+                                            value: (nominal - sisa) / nominal,
+                                            backgroundColor: Colors.grey[200],
+                                            color: Colors.orange,
+                                            minHeight: 4,
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            "Terbayar: ${_formatter.format(paid)}",
+                                            style: const TextStyle(
+                                                fontSize: 10,
+                                                color: Colors.grey),
+                                          )
+                                        ]
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+      ),
     );
   }
 }
