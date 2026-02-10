@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-// Ganti import DbHelper dengan ApiService
 import '../../services/api_service.dart';
 import 'home_page.dart';
 
@@ -11,13 +10,12 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  // Controller untuk menangkap input teks
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+
   bool _isPasswordVisible = false;
   bool _isLoading = false;
 
-  // REVISI: Gunakan ApiService, bukan DbHelper
   final ApiService _apiService = ApiService();
 
   void _handleLogin() async {
@@ -26,148 +24,254 @@ class _LoginPageState extends State<LoginPage> {
 
     if (username.isEmpty || password.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Username dan Password wajib diisi')),
+        const SnackBar(
+          content: Text('Username dan Password wajib diisi'),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
       );
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-    });
+    setState(() => _isLoading = true);
 
     try {
-      // REVISI: Panggil fungsi login dari ApiService (Konek ke Server)
       final response = await _apiService.login(username, password);
 
-      // Pastikan widget masih ada sebelum update UI (mencegah error 'called on null')
       if (!mounted) return;
 
-      // Cek status dari JSON Server
       if (response['status'] == true) {
-        // SUKSES: Login Berhasil -> Pindah ke Home Page
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (context) => const HomePage()),
         );
       } else {
-        // GAGAL: Password salah atau User tidak ditemukan
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(response['message'] ?? 'Login Gagal'),
             backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
           ),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Gagal terhubung ke server. Cek internet Anda.'),
+          const SnackBar(
+            content: Text('Gagal terhubung ke server.'),
             backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
           ),
         );
       }
     } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // Ukuran layar
+    final size = MediaQuery.of(context).size;
+
     return Scaffold(
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(
-                Icons.cloud_done, // Ganti Icon biar terasa bedanya (Opsional)
-                size: 100,
+      backgroundColor: Colors.grey[100],
+      body: SingleChildScrollView(
+        // Agar keyboard tidak menutupi form & bisa discroll
+        child: Stack(
+          children: [
+            // 1. BACKGROUND HEADER (HIJAU)
+            Container(
+              height: size.height * 0.45, // Tinggi header 45% layar
+              width: double.infinity,
+              decoration: const BoxDecoration(
                 color: Color(0xFF2E7D32),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'BMT AL MUKMININ',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF2E7D32),
+                borderRadius: BorderRadius.only(
+                  bottomLeft: Radius.circular(40),
+                  bottomRight: Radius.circular(40),
                 ),
               ),
-              const Text(
-                'Online System Login', // Update Text
-                style: TextStyle(color: Colors.grey),
-              ),
-              const SizedBox(height: 48),
-              TextField(
-                controller: _usernameController,
-                decoration: const InputDecoration(
-                  labelText: 'Username',
-                  prefixIcon: Icon(Icons.person),
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _passwordController,
-                obscureText: !_isPasswordVisible,
-                decoration: InputDecoration(
-                  labelText: 'Password',
-                  prefixIcon: const Icon(Icons.lock),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _isPasswordVisible
-                          ? Icons.visibility
-                          : Icons.visibility_off,
+            ),
+
+            // 2. KONTEN (LOGO + FORM)
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    SizedBox(height: size.height * 0.05), // Jarak dari atas
+
+                    // --- LOGO & JUDUL ---
+                    const CircleAvatar(
+                      radius: 35,
+                      backgroundColor: Colors.white,
+                      child: Icon(Icons.mosque,
+                          size: 40, color: Color(0xFF2E7D32)),
                     ),
-                    onPressed: () {
-                      setState(() {
-                        _isPasswordVisible = !_isPasswordVisible;
-                      });
-                    },
-                  ),
-                  border: const OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 24),
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton(
-                  onPressed: _isLoading ? null : _handleLogin,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2E7D32),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
+                    const SizedBox(height: 15),
+                    const Text(
+                      'BMT AL MUKMININ',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                        letterSpacing: 1.0,
+                      ),
                     ),
-                  ),
-                  child: _isLoading
-                      ? const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                    const SizedBox(height: 5),
+                    const Text(
+                      'Sistem Informasi Manajemen',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                      ),
+                    ),
+
+                    SizedBox(
+                        height:
+                            size.height * 0.05), // Jarak antara Judul & Kartu
+
+                    // --- KARTU FORM LOGIN ---
+                    Card(
+                      elevation: 8,
+                      shadowColor: Colors.black12,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(30.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                                strokeWidth: 2,
+                            const Text(
+                              "Login Aplikasi",
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF2E7D32),
                               ),
                             ),
-                            SizedBox(width: 10),
-                            Text("Menghubungkan...")
+                            const SizedBox(height: 5),
+                            const Text(
+                              "Masukkan akun untuk melanjutkan",
+                              style:
+                                  TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                            const SizedBox(height: 25),
+
+                            // Input Username
+                            TextFormField(
+                              controller: _usernameController,
+                              textInputAction: TextInputAction.next,
+                              decoration: InputDecoration(
+                                labelText: 'Username',
+                                prefixIcon: const Icon(Icons.person_outline,
+                                    color: Colors.grey),
+                                filled: true,
+                                fillColor: Colors.grey[50],
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
+                                contentPadding:
+                                    const EdgeInsets.symmetric(vertical: 16),
+                              ),
+                            ),
+
+                            const SizedBox(height: 20),
+
+                            // Input Password
+                            TextFormField(
+                              controller: _passwordController,
+                              obscureText: !_isPasswordVisible,
+                              textInputAction: TextInputAction.done,
+                              onFieldSubmitted: (_) =>
+                                  _handleLogin(), // Enter langsung login
+                              decoration: InputDecoration(
+                                labelText: 'Password',
+                                prefixIcon: const Icon(Icons.lock_outline,
+                                    color: Colors.grey),
+                                suffixIcon: IconButton(
+                                  icon: Icon(
+                                    _isPasswordVisible
+                                        ? Icons.visibility
+                                        : Icons.visibility_off,
+                                    color: Colors.grey,
+                                  ),
+                                  onPressed: () {
+                                    setState(() {
+                                      _isPasswordVisible = !_isPasswordVisible;
+                                    });
+                                  },
+                                ),
+                                filled: true,
+                                fillColor: Colors.grey[50],
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
+                                contentPadding:
+                                    const EdgeInsets.symmetric(vertical: 16),
+                              ),
+                            ),
+
+                            const SizedBox(height: 30),
+
+                            // Tombol Login
+                            SizedBox(
+                              width: double.infinity,
+                              height: 50,
+                              child: ElevatedButton(
+                                onPressed: _isLoading ? null : _handleLogin,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF2E7D32),
+                                  foregroundColor: Colors.white,
+                                  elevation: 2,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                                child: _isLoading
+                                    ? const SizedBox(
+                                        width: 24,
+                                        height: 24,
+                                        child: CircularProgressIndicator(
+                                          color: Colors.white,
+                                          strokeWidth: 2.5,
+                                        ),
+                                      )
+                                    : const Text(
+                                        'MASUK',
+                                        style: TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                          letterSpacing: 1,
+                                        ),
+                                      ),
+                              ),
+                            ),
                           ],
-                        )
-                      : const Text('MASUK', style: TextStyle(fontSize: 16)),
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 30),
+
+                    // Footer Version
+                    const Text(
+                      "Versi 1.0.0",
+                      style: TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
+                    const SizedBox(
+                        height: 20), // Padding bawah agar scroll mentok nyaman
+                  ],
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
