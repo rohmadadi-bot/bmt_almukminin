@@ -32,6 +32,24 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.13.1 # Dipindah ke sini karena ini tool developer
 
+# Konfigurasi Icon Launcher
+flutter_launcher_icons:
+  android: "launcher_icon" # Nama icon di folder android
+  ios: true
+  image_path: "assets/icon.png" # Sesuaikan dengan lokasi gambar Anda
+  min_sdk_android: 21 # Rekomendasi agar support android lama
+  
+  # Opsi Tambahan (Penting untuk Android Modern agar tidak terpotong bulat jelek):
+  # Jika ingin background warna solid:
+  adaptive_icon_background: "#35882E" # Kode warna Hex (hijau)
+  adaptive_icon_foreground: "assets/icon.png" # Gambar utama
+
+# Konfigurasi Flutter
 flutter:
   uses-material-design: true
+  
+  # --- BAGIAN INI DITAMBAHKAN AGAR GAMBAR BISA DIBACA APLIKASI ---
+  assets:
+    - assets/logo.png

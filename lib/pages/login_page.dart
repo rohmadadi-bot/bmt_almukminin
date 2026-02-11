@@ -102,12 +102,21 @@ class _LoginPageState extends State<LoginPage> {
                   children: [
                     SizedBox(height: size.height * 0.05), // Jarak dari atas
 
-                    // --- LOGO & JUDUL ---
-                    const CircleAvatar(
-                      radius: 35,
-                      backgroundColor: Colors.white,
-                      child: Icon(Icons.mosque,
-                          size: 40, color: Color(0xFF2E7D32)),
+                    // --- LOGO & JUDUL (YANG DIUBAH) ---
+                    CircleAvatar(
+                      radius: 80,
+                      backgroundColor: const Color(0xFF2E7D32),
+                      child: Padding(
+                        padding: const EdgeInsets.all(
+                            8.0), // Padding agar gambar tidak mentok pinggir
+                        child: Image.asset(
+                          'assets/logo.png', // Ganti dengan path icon Anda
+                          width: 150,
+                          height: 150,
+                          // Jika icon Anda transparan dan ingin diwarnai hijau, uncomment baris bawah:
+                          // color: const Color(0xFF2E7D32),
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 15),
                     const Text(
